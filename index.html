@@ -60,11 +60,13 @@
     <label style="margin-top:0">One-tap presets (saves instantly)</label>
     <button class="primary big" id="pRave">RAVE &mdash; beams &amp; dots to the music</button>
     <div style="height:8px"></div>
+    <button class="big" id="pRaveAuto">RAVE AUTO &mdash; beams &amp; dots, no sound needed</button>
+    <div style="height:8px"></div>
     <div class="seg">
       <button id="pLines">Laser lines</button>
       <button id="pAll">All patterns</button>
     </div>
-    <p class="hint">All presets switch on SOUND mode, so the lasers change on the beat. Rave and Laser lines play only straight lines and dots: no shapes, no animations. Best in haze.</p>
+    <p class="hint">RAVE, Laser lines and All patterns use SOUND mode, so the lasers change on the beat. RAVE AUTO keeps moving by itself at a set speed. Rave and Laser lines play only straight lines and dots: no shapes, no animations. Best in haze.</p>
   </div>
 
   <div class="card hide" id="controls">
@@ -203,13 +205,16 @@ async function applyPreset(name, fn) {
   } catch (e) { status(e.message, true); }
 }
 
-$("pRave").onclick = () => applyPreset("RAVE", () => {
+function rave(sound) {
   settings[0] = 6;                              // Outdoor group: lines + dots
   pickPatterns(6, OUTDOOR_BEAMS);
   settings[2] = 8;                              // color: Jump
-  settings[8] = 255;                            // SOUND
-  if (settings[9] < 128) settings[9] = 160;     // sensitivity at least ~63%
-});
+  settings[8] = sound ? 255 : 0;                // SOUND or AUTO
+  if (sound && settings[9] < 128) settings[9] = 160;   // sensitivity at least ~63%
+  if (!sound && settings[5] < 150) settings[5] = 200;  // AUTO: lively speed
+}
+$("pRave").onclick = () => applyPreset("RAVE", () => rave(true));
+$("pRaveAuto").onclick = () => applyPreset("RAVE AUTO", () => rave(false));
 $("pLines").onclick = () => applyPreset("Laser lines", () => {
   settings[0] = 2;                              // Line group, line patterns only
   pickPatterns(2, LINE_BEAMS);
