@@ -475,6 +475,7 @@ function queueScene(sc) { lastScene = sc; pending = sc; }
 // ---- Live motion: the page drives position / angle / roll itself, 20x a second ----
 // (The laser's own sweep restarts every time a scene is sent and is slow, so we don't use it.)
 let look = null, move = null, moveT0 = 0, spinAngle = 0, lastTick = performance.now();
+let strobeUntil = 0, strobeK = -1, strobeXY = [0, 0];
 const wave = {
   sin: p => Math.sin(2 * Math.PI * p),
   cos: p => Math.cos(2 * Math.PI * p),
@@ -502,6 +503,13 @@ function liveScene() {
   const [x, y] = motionAt(sec);
   spinAngle = (spinAngle + move.spin * dt * 128 + 128) % 128;            // spin = turns per second
   const sc = { ...look };
+  if (now < strobeUntil) {                                   // chop: white/colour flicker + snapping position (ref 0:44)
+    const k = Math.floor(now / 60);
+    if (k !== strobeK) { strobeK = k; strobeXY = [rnd(-1, 1), rnd(-1, 1)]; }
+    sc.color = k % 2 ? C.white : look.color; sc.flow = 0;
+    sc.hmove = posByte(strobeXY[0]); sc.vmove = posByte(strobeXY[1]); sc.rot = Math.round(spinAngle) % 128;
+    return sc;
+  }
   sc.hmove = posByte(x); sc.vmove = posByte(y);
   sc.rot = Math.round(spinAngle) % 128;
   sc.hflip = move.roll ? posByte(wave.sin(sec * move.roll)) : 0;          // 3D roll
@@ -594,7 +602,7 @@ $("flip180").onclick = () => {
 drawJoy();
 
 // ---- Natural song sections: drop / build / breakdown, chosen at random like a real set ----
-let sec = { name: "drop", left: 8, total: 8 }, spinDir = 1, axisPick = 0;
+let sec = { name: "drop", left: 8, total: 8 }, spinDir = 1, axisPick = 0, holdUntilTick = 0;
 const PARTY_ORDER = [["breakdown", 8], ["build", 8], ["drop", 16], ["breakdown", 8], ["build", 4], ["drop", 16]];
 let partyIdx = 0;
 function nextSection() {
@@ -618,7 +626,7 @@ function newMove(energy, beatSec) {
   const fBeat = 1 / beatSec;
   return {
     kind, amp: rnd(.65, 1), dir: pick([-1, 1]),
-    f: kind === "snap" ? 0 : pick([.5, 1, 2]) * fBeat * (.25 + energy) ,            // locked to the tempo
+    f: kind === "snap" ? 0 : Math.min(4, pick([1, 1, 2]) * fBeat * (.4 + energy)),     // locked to the tempo, up to 4 Hz
     x0: rnd(-.5, .5), y0: rnd(-.6, .6), sx: rnd(-1, 1), sy: rnd(-1, 1),
     spin: (Math.random() < .25 + .6 * energy ? pick([-1, 1]) * rnd(.3, 2) * energy : 0),
     roll: Math.random() < energy * .6 ? rnd(.5, 2.5) * energy : 0,
@@ -660,8 +668,15 @@ function chaseStep() {
   }
   // RAVE / PARTY / MIX: random mix on every beat - sometimes the look, sometimes the move, often both.
   if (sec.name === "drop") {
+    if (inBar === 0 && Math.random() < .2) {                 // sheet hold: one bar of wide slow tilting sheets (ref 0:56)
+      look = newLook(.3, false); look.group = G.line; look.flow = 0; look.size = 255;
+      move = { kind: "tilt", amp: .9, f: .5 / beatSec / 2, x0: rnd(-.3, .3), y0: 0, dir: 1, spin: 0, roll: rnd(0, .4), rollV: 0 };
+      moveT0 = performance.now(); holdUntilTick = t + 8; return;
+    }
+    if (t < holdUntilTick) return;
+    if (beat && Math.random() < .15) strobeUntil = performance.now() + beatSec * 1000 * pick([.5, 1]);   // strobe chop
+    if (Math.random() < .8) look = newLook(energy, animOk);                                         // new look every half beat
     if (beat) {
-      if (r < .75) look = newLook(energy, animOk);
       if (r > .35) { move = newMove(energy, beatSec); moveT0 = performance.now(); }
       else move = { ...move, spin: -move.spin || pick([-1.5, 1.5]) };            // spin reversal on the kick
     } else if (move.kind === "snap" || r < .3) {
