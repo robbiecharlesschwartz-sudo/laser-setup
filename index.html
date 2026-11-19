@@ -770,10 +770,11 @@ function newFormation(sectionChange) {
   show.expT0 = performance.now();
   show.colIdx = 0;
   const f = F[show.form], e = sectionEnergy();
-  const speed = k => k ? Math.min(1, k * (.45 + .75 * e)) : 0;
+  // User feedback: previous speed = the slowest it should ever get. Floor at ~55%, climbing to max with energy.
+  const speed = k => k ? Math.min(1, .55 + .45 * Math.min(1, k * (.8 + .7 * e))) : 0;
   show.tgt = { h: speed(f.m.h), v: speed(f.m.v), hflip: speed(f.m.hflip), vflip: speed(f.m.vflip),
                rot: f.m.rot ? show.spinSign * speed(f.m.rot) : 0 };
-  if (chase === "club") show.tgt.rot *= .6;                               // CLUB: limited spin
+  if (chase === "club") show.tgt.rot *= .8;                               // CLUB: spin slightly reined in
 }
 
 // Smooth motion toward the target (momentum instead of jumps). Called every half beat.
@@ -791,14 +792,36 @@ function buildScene() {
   sc.graph = show.graph;
   sc.color = pal.split && show.colIdx % 2 === 0 ? C.seg2 : pal.cols[show.colIdx % pal.cols.length];
   sc.flow = f.flow ?? (sectionEnergy() > .6 ? 100 : 40);
-  sc.size = Math.round(255 * expansionNow());
-  sc.wave = f.wave ? (show.sec.name === "drop" ? 0 : f.wave) : 0;
+  const L = show.layers || new Set();
+  sc.size = Math.round(255 * (L.has("expand") ? expansionNow() : 1));
+  sc.wave = L.has("wave") ? (f.wave || 120) : (f.wave && show.sec.name !== "drop" ? f.wave : 0);
+  if (L.has("split") && !pal.split) sc.color = show.colIdx % 2 ? C.seg2 : sc.color;
+  if (L.has("flow")) sc.flow = 127;
   sc.hmove = spd(show.m.h) || 0;
   sc.vmove = spd(show.m.v) || (f.vpos ? posByte(Math.max(0, f.vpos)) : 0);
   sc.rot = rotB(show.m.rot);
   sc.hflip = spd(show.m.hflip) || (f.faceOn ? 32 : 0);
   sc.vflip = spd(show.m.vflip);
   return sc;
+}
+
+// --- Feature layers: expansion is ONE of several features; each bar a different mix is active.
+const LAYERS = ["expand", "wave", "roll", "spin", "split", "flow", "flip3d"];
+show.layers = new Set(["expand"]); show.layerHist = [];
+function layerShuffle(S) {
+  const n = S === "drop" ? pick([2, 3, 3, 4]) : S === "build" ? pick([2, 3]) : pick([1, 2]);
+  let best = null;
+  for (let tries = 0; tries < 6; tries++) {           // avoid the last 3 mixes
+    const mix = [...LAYERS].sort(() => Math.random() - .5).slice(0, n).sort().join(",");
+    if (!show.layerHist.slice(-3).includes(mix)) { best = mix; break; }
+    best = mix;
+  }
+  show.layerHist.push(best);
+  show.layers = new Set(best.split(","));
+  if (show.layers.has("expand") && Math.random() < .6) { show.exp = pick(EXP_FOR[chase === "club" ? "club" : S]); show.expT0 = performance.now(); }
+  if (show.layers.has("spin")) { show.spinSign *= -1; show.tgt.rot = show.spinSign * (S === "drop" ? rnd(.75, 1) : rnd(.55, .8)); }
+  if (show.layers.has("roll")) show.tgt.hflip = Math.max(show.tgt.hflip, rnd(.65, 1));
+  if (show.layers.has("flip3d")) show.tgt.vflip = rnd(.6, 1); else show.tgt.vflip = 0;
 }
 
 function chaseStep() {
@@ -810,7 +833,7 @@ function chaseStep() {
   const S = show.sec.name, e = sectionEnergy(), prog = 1 - show.sec.left / show.sec.total;
 
   // Phrases: formations evolve on phrase boundaries, not every beat.
-  const phraseBars = chase === "club" ? 8 : S === "drop" ? 2 : 4;
+  const phraseBars = chase === "club" ? (S === "drop" ? 2 : 4) : S === "drop" ? pick([1, 2]) : 2;
   if (inBar === 0 && bar > 0 && bar % phraseBars === 0 && show.sec.left !== show.sec.total) newFormation(false);
 
   // Build: speeds keep rising inside the phrase; last half bar goes dark for anticipation.
@@ -820,7 +843,8 @@ function chaseStep() {
     if (chase !== "club" && show.sec.left === 1 && inBar >= 6) { if (inBar === 6) blackout(); return; }
   }
   // Breakdowns settle quickly at first (contrast after a drop), then glide.
-  easeMotion(S === "drop" ? .7 : S === "build" ? .45 : (show.sec.total - show.sec.left < 1 ? .5 : .25));
+  easeMotion(S === "drop" ? .85 : S === "build" ? .6 : (show.sec.total - show.sec.left < 1 ? .6 : .4));
+  if (inBar === 0) layerShuffle(S);                  // every bar: vary which feature layers are active
 
   // Micro-events: accents on beats / snares, never a full reset.
   if (beat) {
