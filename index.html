@@ -639,7 +639,10 @@ drawJoy();
 //  - Positions (0-127, circular): vertical 32 = up, 96 = down; horizontal 12 = left, 116 = right (32 = too far, edge-on).
 //  - Design groups switch live: line, arc, bright dots, dots, animations.
 //  - 2 machines x 2 heads; follower mirrors the lead over DMX.
-// Untested (used carefully / not at all): wave, zoom, size changes, blackout frame.
+//  - Size 0-255 changes LIVE while the sweep keeps flowing (expansion layer). Max width is the scanner's limit.
+//  - Wave (byte 11, ~130) ripples the lines. Built-in zoom pulse = small & choppy -> not used. View Size 100 = no visible gain.
+//  - Line patterns with CONNECTED lines: graph 0, 150, 200. Graph 50 = tightly dotted line. 100 = gaps, 250 = blank.
+// Untested: blackout frame.
 
 // --- Palettes: colour has a role. LightElf codes: red 15, blue 25, pink(magenta) 35, cyan 45, green 65, white 5, 2-colour split 100.
 const PALETTES = {
@@ -663,14 +666,14 @@ const F = {
   wideFan:  { label: "Wide fan",     groups: [G.line], dens: 1, m: { h: .35 }, faceOn: true },
   rotFan:   { label: "Rotating fan", groups: [G.line], dens: 2, m: { h: .25, rot: .45 } },
   sheet:    { label: "Sheet",        groups: [G.line], dens: 1, m: { v: .5 }, flow: 0 },
-  sky:      { label: "Liquid sky",   groups: [G.line], dens: 1, m: { h: .3 }, vpos: .75, flow: 15 },
+  sky:      { label: "Liquid sky",   groups: [G.line], dens: 1, m: { h: .3 }, vpos: .75, flow: 15, wave: 130 },
   cross:    { label: "Crossing sheets", groups: [G.line], dens: 3, m: { h: .75, v: .6 } },
   xform:    { label: "X formation",  groups: [G.line], dens: 3, m: { h: .9, v: .9, hflip: .7 } },
   tunnel:   { label: "Tunnel",       groups: [G.arc],  dens: 2, m: { rot: .55, v: .25 } },
   tunnelX:  { label: "Tunnel burst", groups: [G.arc],  dens: 3, m: { rot: .95, h: .5, v: .5 } },
-  rays:     { label: "Ray array",    groups: [G.dot, G.bright], dens: 2, m: { h: .6, v: .3 } },
+  rays:     { label: "Ray array",    groups: [G.line], dotted: true, dens: 2, m: { h: .6, v: .3 } },
   raysDense:{ label: "Dense rays",   groups: [G.bright], dens: 3, m: { h: .85, v: .7, rot: .4 } },
-  wave:     { label: "Figure-8 wave",groups: [G.line, G.dot], dens: 1, m: { h: .35, v: .55 } },
+  wave:     { label: "Figure-8 wave",groups: [G.line], dens: 1, m: { h: .35, v: .55 }, wave: 110 },
   roll:     { label: "3D roll",      groups: [G.line], dens: 2, m: { hflip: .6, v: .35 } },
   anim:     { label: "Animation",    groups: G.anims, dens: 1, m: { h: .2, v: .25 } },
 };
@@ -691,6 +694,33 @@ const SUIT = {
   drop:      { xform: 3, tunnelX: 3, raysDense: 3, cross: 2, fan: 1, rotFan: 1 },
   club:      { sky: 3, wideFan: 3, sheet: 2, wave: 2, fan: 2, tunnel: 1, cross: 1, roll: 1 },
 };
+
+// --- Expansion / contraction layer (size 0-255, verified live). Values are 0..1 of full size.
+// Each envelope is a function of beats since the formation started (b) and beat phase (ph 0..1).
+const EXP = {
+  breathe:  (b) => .55 + .45 * Math.sin(b / 8 * Math.PI * 2),                 // slow 2-bar breathing
+  swell:    (b) => .35 + .65 * Math.min(1, b / 16),                           // slow continuous growth
+  kick:     (b, ph) => .45 + .55 * Math.exp(-ph * 5),                        // burst on every kick, decay
+  snap:     (b, ph) => (Math.floor(b) % 4 === 1 || Math.floor(b) % 4 === 3) && ph < .35 ? .25 : 1, // contract on snare, explode back
+  irregular:(b) => .5 + .25 * Math.sin(b * 1.7) + .25 * Math.sin(b * .63),   // controlled irregular cycle
+  max:      () => 1,
+  collapse: (b, ph) => b % 8 < 7 ? 1 : .15 + .85 * ph,                       // collapse & re-explode each 2 bars
+};
+const EXP_FOR = {
+  breakdown: ["breathe", "swell", "irregular"], build: ["swell", "kick", "breathe"],
+  drop: ["kick", "snap", "max", "collapse", "irregular"], club: ["breathe", "swell", "irregular", "max"],
+};
+function expansionNow() {
+  if (!show.exp) return 1;
+  const beatMs = (mic ? beatGap : 60000 / +$("bpm").value);
+  const sinceBeat = mic ? (performance.now() - lastBeatAt) : ((performance.now() - show.expT0) % beatMs);
+  const b = (performance.now() - show.expT0) / beatMs, ph = Math.min(1, sinceBeat / beatMs);
+  let v = EXP[show.exp](b, ph);
+  if (show.sec.name === "build") v = Math.max(.2, v * (.4 + .6 * (1 - show.sec.left / show.sec.total)));  // builds widen over time
+  return Math.max(.12, Math.min(1, v));
+}
+// 10 Hz expansion refresh between beats (looks + motion stay as chosen on the beat).
+setInterval(() => { if (chase && show.form && tx && !sending) queueScene(buildScene()); }, 100);
 
 // --- Show state
 const show = {
@@ -734,7 +764,10 @@ function newFormation(sectionChange) {
   for (const [k, w] of Object.entries(suit)) opts[k] = w * (from.includes(k) ? 2 : sectionChange ? 1 : .4);
   show.form = weighted(opts, show.history.slice(-3));
   show.history.push(show.form);
-  show.graph = Math.round(rnd(0, 255));
+  const f0 = F[show.form];
+  show.graph = f0.groups[0] === G.line ? pick(f0.dotted ? [50] : [0, 150, 200]) : Math.round(rnd(0, 200));
+  show.exp = pick(EXP_FOR[f0.exp || (chase === "club" ? "club" : show.sec.name)]);
+  show.expT0 = performance.now();
   show.colIdx = 0;
   const f = F[show.form], e = sectionEnergy();
   const speed = k => k ? Math.min(1, k * (.45 + .75 * e)) : 0;
@@ -758,7 +791,8 @@ function buildScene() {
   sc.graph = show.graph;
   sc.color = pal.split && show.colIdx % 2 === 0 ? C.seg2 : pal.cols[show.colIdx % pal.cols.length];
   sc.flow = f.flow ?? (sectionEnergy() > .6 ? 100 : 40);
-  sc.size = 255;
+  sc.size = Math.round(255 * expansionNow());
+  sc.wave = f.wave ? (show.sec.name === "drop" ? 0 : f.wave) : 0;
   sc.hmove = spd(show.m.h) || 0;
   sc.vmove = spd(show.m.v) || (f.vpos ? posByte(Math.max(0, f.vpos)) : 0);
   sc.rot = rotB(show.m.rot);
@@ -797,10 +831,10 @@ function chaseStep() {
     } else if (S === "drop") {
       show.colIdx++;                                                           // colour accent every beat
       if (Math.random() < .5) { show.spinSign *= -1; show.tgt.rot = show.spinSign * Math.max(.5, Math.abs(show.tgt.rot)); show.m.rot = show.tgt.rot; } // spin reversal on the kick
-      if (isSnare && Math.random() < .4) show.graph = (show.graph + 37) % 256;   // snare: pattern snap
+      if (isSnare && Math.random() < .4) show.graph = pick([0, 150, 200].filter(g => g !== show.graph)); // snare: pattern snap
     } else if (S === "build") {
       if (inBar % 4 === 0 || prog > .6) show.colIdx++;
-      if (prog > .75) show.graph = (show.graph + 23) % 256;
+      if (prog > .75 && inBar % 4 === 0) show.graph = pick([0, 150, 200]);
     }
   }
   queueScene(buildScene());
