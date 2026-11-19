@@ -603,6 +603,19 @@ const posByte = v => Math.round((Math.asin(clamp1(v)) / (2 * Math.PI) * 128 + 12
 function baseScene() {
   return { graph: rnd(0, 255), group: G.line, color: C.seg4, flow: 60, size: 220, zoom: 0, rot: 0, hflip: 0, vflip: 0, hmove: 64, vmove: 64, wave: 0 };
 }
+// One-scene LIST: verified on both lasers. Each laser stores a scene list in Program mode; the plain single-scene
+// command only edits entry #1 while the stored list keeps cycling (that caused stray circles/moving shapes).
+// Writing a 1-entry list replaces the stored list; later single-scene edits then change that one scene live.
+function sceneList(sc) {
+  const one = sceneFrame(sc).slice(12, 42);
+  return ("D0D1D2D3" + "81" + "00" + one + "FF" + "D4D5D6D7").toUpperCase();
+}
+async function enterProgram(sc) {             // Program mode + replace the stored list with this one scene
+  const p = new Uint8Array(settings); p[0] = 7; p[8] = 0;
+  await writeSure(settingsFrame(p));
+  await write(sceneList(sc)); await pause(60); await write(sceneList(sc));
+  inProgram = true;
+}
 function sceneFrame(sc) {
   const c = [sc.graph, sc.group, sc.color, sc.flow, sc.size, sc.zoom, sc.rot, sc.hflip, sc.vflip, sc.hmove, sc.vmove, sc.wave, 0];
   const body = (c.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("") + "FA").padEnd(30, "0");
@@ -672,11 +685,11 @@ setInterval(async () => {
     if (sc.draw) {                                     // drawn shapes (smooth circles): big frames, max ~4 Hz
       if (performance.now() - lastDrawAt < 240) { pending = pending || sc; return; }
       lastDrawAt = performance.now();
-      if (!inProgram) { const p = new Uint8Array(settings); p[0] = 7; await write(settingsFrame(p)); inProgram = true; }
+      if (!inProgram) await enterProgram({ ...sc, size: 0 });
       await write(drawFrameCfg(sc.draw, sc));       // stays in Program mode -> no flash when switching back to scenes
     } else {
-      if (!inProgram) { const p = new Uint8Array(settings); p[0] = 7; await write("C0C1C2C3" + hex(p) + "C4C5C6C7"); inProgram = true; }
-      await write(sceneFrame(sc));
+      if (!inProgram) await enterProgram(sc);
+      else await write(sceneFrame(sc));
     }
     const ax = v => v >= 128 ? "sweep " + Math.round((v - 128) / 1.27) + "%" : v ? posPct(v) : "centre";
     const sp = sc.rot >= 192 ? "CCW " + Math.round((sc.rot - 192) / .63) + "%" : sc.rot >= 128 ? "CW " + Math.round((sc.rot - 128) / .63) + "%" : "off";
@@ -1120,7 +1133,7 @@ let micFresh = false;
 function resendMic() { if (micShow()) sendFrame(micFrame()); }
 function sendScene(sc) {                      // one-off Program scene (motion accents in mic shows)
   const p = new Uint8Array(settings); p[0] = 7;
-  write("C0C1C2C3" + hex(p) + "C4C5C6C7").then(() => write(sceneFrame(sc))).catch(() => {});
+  enterProgram(sc).catch(() => {});
 }
 
 function chaseStep() {
@@ -1312,7 +1325,7 @@ function partyTick() {                     // every 100 ms: advance steps on tim
 async function startParty() {
   const p = new Uint8Array(settings); p[0] = 7; p[8] = 0;
   await writeSure(settingsFrame(p)); inProgram = true;
-  await write(sceneFrame({ ...baseScene(), size: 0 }));          // replaces any stored playlist
+  await write(sceneList({ ...baseScene(), size: 0 }));            // replaces any stored scene list
   partyQueue = []; partySet = null; nextPartySet(); partyStepAt = performance.now(); partyRamp = null;
   const st = partySet.steps[0];
   queueScene({ ...partyLook(st, 0), size: st.size ? st.size[0] : 255 });
@@ -1357,7 +1370,7 @@ async function sendStatic(item) {
   drawingScene = { ...sc, staticItem: item }; lastScene = drawingScene;
   try {
     await prepDraw();                                         // Program mode + replace any stored playlist
-    await write(sc.draw ? drawFrameCfg(sc.draw, sc) : sceneFrame(sc));
+    if (sc.draw) await write(drawFrameCfg(sc.draw, sc)); else { await write(sceneList(sc)); await pause(60); await write(sceneList(sc)); }
     [...$("shapes").children].forEach(b => b.classList.toggle("on", b.dataset.name === item.name));
     status(item.name + " (still). Drag Aim to move it; colour buttons recolour it.");
   } catch (e) { status(e.message, true); }
@@ -1413,7 +1426,7 @@ async function startAnimations() {
 async function prepDraw() {
   const p = new Uint8Array(settings); p[0] = 7; p[8] = 0;
   await writeSure(settingsFrame(p)); inProgram = true;
-  await write(sceneFrame({ ...baseScene(), size: 0, color: C.white }));
+  await write(sceneList({ ...baseScene(), size: 0, color: C.white }));
 }
 
 // ---------- re-apply fine-tune to whatever is playing ----------
