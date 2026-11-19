@@ -127,7 +127,7 @@
   <div class="card">
     <h2><span class="n">01</span>Shows<span class="hint">Tap to start</span></h2>
     <div class="shows">
-      <button class="show" data-show="rave"><i>A</i><b>Rave</b><span>Tunnels, X formations, dense rays. Drops hit hard.</span></button>
+      <button class="show" data-show="rave"><i>A</i><b>Rave</b><span>Sound ON. Tunnels, X formations, dense rays. Drops hit hard.</span></button>
       <button class="show" data-show="club"><i>B</i><b>Club</b><span>Liquid skies, wide fans, sheets. Long phrases.</span></button>
       <button class="show" data-show="lines"><i>C</i><b>Lines</b><span>Straight beams on the beat.</span></button>
       <button class="show" data-show="classic"><i>D</i><b>Classic</b><span>Every built-in pattern.</span></button>
@@ -590,7 +590,11 @@ setInterval(async () => {
   if (motion.angle !== null) sc.rot = motion.angle;
   sending = true;
   try {
-    if (!inProgram) { const p = new Uint8Array(settings); p[0] = 7; await fastWrite("C0C1C2C3" + hex(p) + "C4C5C6C7"); inProgram = true; }
+    if (!inProgram) {
+      const p = new Uint8Array(settings); p[0] = 7;
+      if (["rave", "mix", "party"].includes(chase)) { p[8] = 255; if (p[9] < 128) p[9] = 170; }   // laser SOUND mode ON + sensitivity
+      await fastWrite("C0C1C2C3" + hex(p) + "C4C5C6C7"); inProgram = true;
+    }
     await fastWrite(sceneFrame(sc));
     telemetry = {
       x: sc.hmove >= 128 ? "sweep " + Math.round((sc.hmove - 128) / 1.27) + "%" : Math.round((sc.hmove / 127 * 2 - 1) * 100),
@@ -961,6 +965,16 @@ function stopMic() {
   if (!mic) return;
   clearInterval(mic.timer); mic.stream.getTracks().forEach(t => t.stop()); mic.ctx.close(); mic = null;
 }
+function micUI() {
+  $("micBtn").textContent = "Sync to the music with the phone mic: " + (mic ? "ON" : "OFF");
+  $("micBtn").classList.toggle("primary", !!mic);
+}
+async function ensureMic() {
+  if (mic) return;
+  try { await startMic(); if (chaseTimer) { clearInterval(chaseTimer); chaseTimer = null; } }
+  catch (e) { status("RAVE is running on the tempo clock (microphone not allowed).", true); }
+  micUI();
+}
 $("micBtn").onclick = async () => {
   try {
     if (mic) { stopMic(); if (chase) startChase(chase); }
@@ -1015,6 +1029,7 @@ document.querySelectorAll(".show").forEach(b => b.onclick = async () => {
     active = b.dataset.show;
   }, s.label + " is playing." + (s.chase ? " Keep this page open." : ""));
   if (s.chase && active === b.dataset.show && settings) startChase(s.chase);
+  if (b.dataset.show === "rave") ensureMic();            // RAVE = sound ON: laser mic + phone beat sync
 });
 $("speed").oninput = e => $("speedVal").textContent = e.target.value + "%";
 $("speed").onchange = e => apply(() => settings[5] = raw(+e.target.value), "Speed set to " + e.target.value + "%.");
