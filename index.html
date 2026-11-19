@@ -3,139 +3,193 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Laser Setup</title>
+<title>Laser Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#0b0d12; --card:#151821; --line:#252a37; --text:#eef1f7; --dim:#8a93a8; --accent:#3cf0a0; --warn:#ff6b6b; }
+  :root {
+    --bg:#08090b; --panel:#0f1013; --panel2:#14161a; --line:#1e2126; --line2:#2a2e35;
+    --text:#e8eaee; --dim:#7c828d; --faint:#4a4f58;
+    --accent:#00e5ff; --accent-dim:rgba(0,229,255,.12); --warn:#ff3b5c;
+    --sans:"Inter Tight", -apple-system, system-ui, sans-serif; --mono:"JetBrains Mono", ui-monospace, monospace;
+  }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 -apple-system, system-ui, sans-serif; }
-  main { max-width:480px; margin:0 auto; padding:18px 16px 40px; }
-  header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; }
-  h1 { font-size:22px; margin:0; }
-  .pill { font-size:13px; padding:6px 10px; border-radius:99px; background:var(--line); color:var(--dim); white-space:nowrap; }
-  .pill.on { background:rgba(60,240,160,.15); color:var(--accent); }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; margin-bottom:14px; }
-  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 12px; font-weight:600; }
-  button { font:inherit; border:0; border-radius:12px; padding:14px; width:100%; cursor:pointer; background:var(--line); color:var(--text); }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 var(--sans); letter-spacing:-.005em;
+         background-image:radial-gradient(1200px 500px at 50% -200px, rgba(0,229,255,.06), transparent 70%); background-attachment:fixed; }
+  main { max-width:520px; margin:0 auto; padding:20px 16px 56px; }
+
+  /* Header */
+  header.top { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 2px 18px; }
+  .brand { display:flex; flex-direction:column; gap:2px; }
+  h1 { font:600 17px/1 var(--sans); letter-spacing:.14em; text-transform:uppercase; margin:0; }
+  .sub { font:400 11px/1 var(--mono); color:var(--faint); letter-spacing:.08em; text-transform:uppercase; }
+  .pill { font:500 11px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase; padding:8px 10px 8px 22px; border-radius:6px;
+          border:1px solid var(--line2); color:var(--dim); position:relative; white-space:nowrap; }
+  .pill::before { content:""; position:absolute; left:9px; top:50%; width:6px; height:6px; margin-top:-3px; border-radius:50%; background:var(--faint); }
+  .pill.on { color:var(--accent); border-color:rgba(0,229,255,.35); }
+  .pill.on::before { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+
+  /* Panels */
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:12px; }
+  h2 { display:flex; align-items:baseline; gap:10px; font:500 11px/1 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--dim); margin:0 0 16px; }
+  h2 .n { color:var(--faint); }
+  h2 .hint { margin-left:auto; color:var(--faint); letter-spacing:.04em; text-transform:none; font-family:var(--sans); font-size:12px; }
+
+  /* Buttons */
+  button { font:500 14px/1.2 var(--sans); border:1px solid var(--line2); border-radius:8px; padding:13px 14px; width:100%; cursor:pointer;
+           background:var(--panel2); color:var(--text); transition:border-color .15s, background .15s, color .15s; }
+  button:hover:not(:disabled) { border-color:#3a3f48; }
+  button:active:not(:disabled) { transform:translateY(1px); }
   button:disabled { opacity:.35; cursor:default; }
-  .primary { background:var(--accent); color:#04120b; font-weight:700; }
-  .shows { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .show { text-align:left; padding:16px 14px; min-height:96px; border:2px solid transparent; position:relative; }
-  .show b { display:block; font-size:19px; letter-spacing:.04em; }
-  .show span { display:block; font-size:13px; color:var(--dim); margin-top:4px; }
-  .show.active { border-color:var(--accent); background:rgba(60,240,160,.08); }
-  .show.active::after { content:"PLAYING"; position:absolute; top:10px; right:12px; font-size:10px; font-weight:700; color:var(--accent); letter-spacing:.08em; }
-  .show.wide { grid-column:1 / -1; min-height:80px; }
-  .note { color:var(--dim); font-size:13px; margin:0; }
+  .primary { background:var(--text); color:#0b0c0e; border-color:var(--text); font-weight:600; letter-spacing:.01em; }
+  .primary:hover:not(:disabled) { background:#fff; }
+  .stop { background:transparent; color:var(--warn); border-color:rgba(255,59,92,.45); font:600 12px/1 var(--mono); letter-spacing:.14em; text-transform:uppercase; padding:14px; }
+  .stop:hover:not(:disabled) { background:rgba(255,59,92,.08); border-color:var(--warn); }
+  .link { background:none; border:0; color:var(--dim); padding:10px 0 0; font-size:13px; text-decoration:underline; text-underline-offset:3px; }
   .seg { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-  #joy { width:100%; aspect-ratio:1; display:block; touch-action:none; background:#06070a; border-radius:14px; border:1px solid var(--line); }
-  .seg button.on { background:rgba(60,240,160,.15); color:var(--accent); }
-  label { display:flex; justify-content:space-between; color:var(--dim); font-size:14px; margin:4px 0 8px; }
-  input[type=range] { width:100%; accent-color:var(--accent); margin:0 0 16px; height:28px; }
+  .seg button.on { border-color:rgba(0,229,255,.45); color:var(--accent); background:var(--accent-dim); }
+
+  /* Show tiles */
+  .shows { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .show { text-align:left; padding:14px 14px 13px; min-height:88px; position:relative; display:flex; flex-direction:column; gap:6px; }
+  .show i { font:400 10px/1 var(--mono); font-style:normal; color:var(--faint); letter-spacing:.1em; }
+  .show b { font:600 15px/1.1 var(--sans); letter-spacing:.06em; text-transform:uppercase; }
+  .show span { font-size:12.5px; line-height:1.4; color:var(--dim); }
+  .show.wide { grid-column:1 / -1; min-height:0; }
+  .show.active { border-color:var(--accent); background:linear-gradient(180deg, rgba(0,229,255,.09), rgba(0,229,255,.02)); }
+  .show.active i { color:var(--accent); }
+  .show.active::after { content:""; position:absolute; top:14px; right:14px; width:7px; height:7px; border-radius:50%; background:var(--accent);
+                        box-shadow:0 0 10px var(--accent); animation:pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.35; } }
+
+  /* Controls */
+  label { display:flex; justify-content:space-between; align-items:baseline; color:var(--dim); font-size:13px; margin:2px 0 8px; }
+  label span:last-child { font:500 12px/1 var(--mono); color:var(--text); }
+  input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:28px; background:transparent; margin:0 0 14px; }
+  input[type=range]::-webkit-slider-runnable-track { height:2px; background:var(--line2); border-radius:2px; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:16px; height:16px; margin-top:-7px; border-radius:50%; background:var(--text); border:3px solid var(--bg); box-shadow:0 0 0 1px var(--line2); }
+  input[type=range]::-moz-range-track { height:2px; background:var(--line2); }
+  input[type=range]::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:var(--text); border:2px solid var(--bg); }
+  .note { color:var(--faint); font-size:12.5px; line-height:1.5; margin:0; }
+  .divider { height:1px; background:var(--line); margin:16px -18px; }
+  #joy { width:100%; aspect-ratio:1; display:block; touch-action:none; background:#060708; border-radius:10px; border:1px solid var(--line); }
   .colors { display:grid; grid-template-columns:repeat(9,1fr); gap:6px; }
-  .colors button { padding:0; height:34px; border-radius:8px; border:2px solid transparent; }
-  .colors button.on { border-color:var(--text); }
-  #status { font-size:14px; color:var(--dim); min-height:20px; margin-top:10px; text-align:center; }
+  .colors button { padding:0; height:30px; border-radius:6px; border:1px solid rgba(255,255,255,.08); }
+  .colors button.on { outline:2px solid var(--text); outline-offset:2px; }
+  #status { font:400 12px/1.4 var(--mono); color:var(--dim); min-height:18px; margin-top:12px; text-align:center; letter-spacing:.02em; }
   #status.err { color:var(--warn); }
-  .link { background:none; color:var(--dim); padding:10px; font-size:14px; text-decoration:underline; }
-  details { color:var(--dim); font-size:14px; }
-  details summary { cursor:pointer; padding:4px 0; }
-  details ol { padding-left:20px; margin:8px 0 0; }
-  details li { margin:4px 0; }
+  #telemetry { font:400 11px/1 var(--mono) !important; color:var(--faint); letter-spacing:.06em; text-align:center; }
+  details { color:var(--dim); font-size:13px; }
+  details summary { cursor:pointer; padding:2px 0; font:500 11px/1 var(--mono); letter-spacing:.12em; text-transform:uppercase; list-style:none; }
+  details summary::-webkit-details-marker { display:none; }
+  details summary::after { content:"+"; float:right; color:var(--faint); }
+  details[open] summary::after { content:"–"; }
+  details ol { padding-left:18px; margin:14px 0 0; }
+  details li { margin:6px 0; }
   [hidden] { display:none !important; }
-  .modal { position:fixed; inset:0; background:rgba(0,0,0,.75); display:flex; align-items:flex-end; justify-content:center; z-index:10; }
-  .sheet { background:var(--card); width:100%; max-width:480px; max-height:100%; overflow:auto; border-radius:18px 18px 0 0; padding:16px; }
-  .sheet header { margin-bottom:10px; }
-  #pad { width:100%; aspect-ratio:1; background:#000; border-radius:12px; display:block; touch-action:none; }
+
+  /* Draw sheet */
+  .modal { position:fixed; inset:0; background:rgba(4,5,6,.8); backdrop-filter:blur(6px); display:flex; align-items:flex-end; justify-content:center; z-index:10; }
+  .sheet { background:var(--panel); border:1px solid var(--line); border-bottom:0; width:100%; max-width:520px; max-height:100%; overflow:auto; border-radius:14px 14px 0 0; padding:18px; }
+  .sheet header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  .sheet h1 { font-size:13px; }
+  #pad { width:100%; aspect-ratio:1; background:#000; border-radius:10px; display:block; touch-action:none; border:1px solid var(--line); }
   .row3 { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:10px; }
   .pens { display:grid; grid-template-columns:repeat(7,1fr); gap:6px; margin-top:10px; }
-  .pens button { padding:0; height:32px; border-radius:8px; border:2px solid transparent; }
-  .pens button.on { border-color:#fff; }
+  .pens button { padding:0; height:28px; border-radius:6px; border:1px solid rgba(255,255,255,.08); }
+  .pens button.on { outline:2px solid #fff; outline-offset:2px; }
   .mine { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px; }
   .mine button { padding:6px; font-size:12px; position:relative; }
-  .mine img { width:100%; aspect-ratio:1; display:block; background:#000; border-radius:6px; }
+  .mine img { width:100%; aspect-ratio:1; display:block; background:#000; border-radius:4px; }
   .mine .x { position:absolute; top:2px; right:6px; color:var(--dim); }
 </style>
-</head>
 <body>
 <main>
-  <header>
-    <h1>Laser Setup</h1>
-    <span class="pill" id="pill">Not connected</span>
+  <header class="top">
+    <div class="brand">
+      <h1>Laser Console</h1>
+      <span class="sub">2 × TD5322A · Bluetooth</span>
+    </div>
+    <span class="pill" id="pill">Offline</span>
   </header>
 
   <div class="card" id="nosupport" hidden>
-    <b>This browser can't use Bluetooth.</b>
-    <p style="color:var(--dim);font-size:14px;margin:8px 0 0">iPhone: open this page in the free <b>Bluefy</b> app. Mac, PC or Android: use <b>Chrome</b>.</p>
+    <h2>Bluetooth unavailable</h2>
+    <p class="note" style="color:var(--dim)">On iPhone, open this page in <b>Bluefy</b>. On Mac, PC or Android, use <b>Chrome</b>.</p>
   </div>
 
   <div class="card" id="connectCard">
-    <button class="primary" id="connect">Connect to laser</button>
-    <button class="link" id="connectAll">Laser not in the list? Show all Bluetooth devices</button>
-    <div id="status">Turn on the lead laser, close LightElf, then connect.</div>
+    <button class="primary" id="connect">Connect lead laser</button>
+    <button class="link" id="connectAll">Not listed? Show all Bluetooth devices</button>
+    <div id="status">Power the lead laser and close LightElf.</div>
   </div>
 
   <div class="card">
-    <button id="pauseBtn" class="primary" style="background:#ff6b6b;color:#1a0505;margin-bottom:12px">PAUSE (lights off)</button>
-    <h2>Shows: tap one, it starts right away</h2>
+    <h2><span class="n">01</span>Shows<span class="hint">Tap to start</span></h2>
     <div class="shows">
-      <button class="show" data-show="rave"><b>RAVE</b><span>Builds, drops and breakdowns: tunnels, X formations, dense rays, spin reversals on the kick</span></button>
-      <button class="show" data-show="club"><b>CLUB</b><span>Hypnotic: liquid skies, wide fans, sheets; long phrases, 1–2 colours</span></button>
-      <button class="show" data-show="lines"><b>LINES</b><span>Straight laser lines on the beat</span></button>
-      <button class="show" data-show="classic"><b>CLASSIC</b><span>Every built-in pattern on the beat</span></button>
-      <button class="show wide" data-show="party"><b>PARTY SHOW (pre-made)</b><span>Scripted set on loop: intro, build, drop, breakdown, build, drop. Set the tempo to your music.</span></button>
-      <button class="show wide" data-show="mix"><b>RAVE + ANIMATIONS</b><span>Animations and beams trading off, both reacting to the music</span></button>
-      <button class="show wide" data-show="anim"><b>ANIMATIONS</b><span>The laser's own animations: chicken, plane, rocket, jet, bat, horse, eagle, dolphin, lion and more, mixed with beam bursts</span></button>
+      <button class="show" data-show="rave"><i>A</i><b>Rave</b><span>Tunnels, X formations, dense rays. Drops hit hard.</span></button>
+      <button class="show" data-show="club"><i>B</i><b>Club</b><span>Liquid skies, wide fans, sheets. Long phrases.</span></button>
+      <button class="show" data-show="lines"><i>C</i><b>Lines</b><span>Straight beams on the beat.</span></button>
+      <button class="show" data-show="classic"><i>D</i><b>Classic</b><span>Every built-in pattern.</span></button>
+      <button class="show wide" data-show="party"><i>E</i><b>Party Set</b><span>Pre-made arc on loop — breakdown, build, drop.</span></button>
+      <button class="show" data-show="mix"><i>F</i><b>Rave + Anim</b><span>Beams and animations trading off.</span></button>
+      <button class="show" data-show="anim"><i>G</i><b>Animations</b><span>Built-in drawings in motion.</span></button>
     </div>
-    <button id="openDraw" style="margin-top:10px">Draw or upload your own animation</button>
-    <div id="tempo">
-      <label style="margin-top:14px"><span>Tempo (BPM)</span><span id="bpmVal"></span></label>
-      <input type="range" id="bpm" min="90" max="180" step="1" value="128">
-      <div class="seg" style="grid-template-columns:1fr 2fr 1fr;margin-bottom:10px">
-        <button id="bpmDown" aria-label="Tempo down">−</button>
-        <button id="tapBtn">TAP to the beat</button>
-        <button id="bpmUp" aria-label="Tempo up">+</button>
-      </div>
-      <button id="micBtn" style="margin-bottom:10px">Sync to the music with the phone mic: OFF</button>
-      <p class="note">With mic sync on, the show follows the kick drum instead of the tempo slider. The laser's own sound mode stays on in RAVE too. PARTY SHOW, RAVE, CLUB, RAVE + ANIMATIONS and ANIMATIONS are driven by this page: keep it open with the screen on. Tapping LINES or CLASSIC stops the chase.</p>
+    <div class="seg" style="margin-top:8px">
+      <button id="openDraw">Draw / upload</button>
+      <button id="pauseBtn" class="stop">Blackout</button>
     </div>
   </div>
 
+  <div class="card" id="tempo">
+    <h2><span class="n">02</span>Tempo<span class="hint" id="bpmVal"></span></h2>
+    <input type="range" id="bpm" min="90" max="180" step="1" value="128" aria-label="Tempo">
+    <div class="seg" style="grid-template-columns:1fr 2fr 1fr;margin-bottom:8px">
+      <button id="bpmDown" aria-label="Tempo down">−</button>
+      <button id="tapBtn">Tap tempo</button>
+      <button id="bpmUp" aria-label="Tempo up">+</button>
+    </div>
+    <button id="micBtn">Sync to the music with the phone mic: OFF</button>
+    <p class="note" style="margin-top:12px">Mic sync follows the kick drum. Shows A, B, E, F, G are driven by this page — keep it open with the screen on.</p>
+  </div>
+
   <div class="card" id="deck">
-    <h2>Aim: drag to point whatever is playing</h2>
-    <canvas id="joy" width="600" height="600" aria-label="Move joystick: left/right and up/down"></canvas>
+    <h2><span class="n">03</span>Aim<span class="hint">Drag to point the show</span></h2>
+    <canvas id="joy" width="600" height="600" aria-label="Aim joystick: left/right and up/down"></canvas>
     <div class="seg" style="margin-top:10px">
       <button id="springBtn" class="on">Spring to center</button>
       <button id="autoBtn" class="on">Auto motion: ON</button>
     </div>
-    <label style="margin-top:14px"><span>Spin  (left = counter-clockwise, right = clockwise)</span><span id="spinVal">0</span></label>
-    <input type="range" id="spin" min="-100" max="100" step="1" value="0" list="detent">
+    <div class="divider"></div>
+    <label><span>Spin</span><span id="spinVal">0</span></label>
+    <input type="range" id="spin" min="-100" max="100" step="1" value="0" list="detent" aria-label="Spin, left counter-clockwise, right clockwise">
     <datalist id="detent"><option value="0"></option></datalist>
     <div class="seg">
       <button id="burst">Spin burst</button>
       <button id="flip180">180° flip</button>
     </div>
-    <p class="note" id="telemetry" style="margin-top:12px;font-variant-numeric:tabular-nums">X – · Y – · Spin –</p>
+    <p class="note" id="telemetry" style="margin-top:14px">X – · Y – · Spin –</p>
   </div>
 
   <div class="card">
-    <h2>Fine-tune: changes apply when you let go</h2>
+    <h2><span class="n">04</span>Fine-tune<span class="hint">Applies on release</span></h2>
     <label><span>Speed</span><span id="speedVal">–</span></label>
-    <input type="range" id="speed" min="0" max="100" step="1">
+    <input type="range" id="speed" min="0" max="100" step="1" aria-label="Speed">
     <label><span>Sound sensitivity</span><span id="sensVal">–</span></label>
-    <input type="range" id="sens" min="0" max="100" step="1">
+    <input type="range" id="sens" min="0" max="100" step="1" aria-label="Sound sensitivity">
     <label><span>Color</span><span id="colorName">–</span></label>
     <div class="colors" id="colors"></div>
   </div>
 
   <div class="card">
     <details>
-      <summary>Help</summary>
+      <summary>Setup notes</summary>
       <ol>
-        <li>Connect to the <b>lead</b> laser (cable in DMX OUT). The other laser in slave mode copies it.</li>
-        <li>Both lasers share one Bluetooth ID, so only one can connect. That's normal.</li>
-        <li><b>One laser animations, the other beams:</b> unplug the DMX cable and set the second laser to sound mode on its back panel (SA). Connect to the first laser and tap ANIMATIONS or RAVE + ANIMATIONS.</li>
-        <li>After a power-off the laser goes back to its back-panel mode. Tap a show again.</li>
-        <li>No laser in the list? Close LightElf, check phone Bluetooth is on, switch the laser off and on.</li>
+        <li>Connect to the <b>lead</b> laser (cable in DMX OUT). The follower, in slave mode, copies it.</li>
+        <li>Only one app can hold a laser at a time — close LightElf and other tabs first.</li>
+        <li>After a power-off the laser returns to its back-panel mode. Tap a show again.</li>
+        <li>Not listed? Turn phone Bluetooth on, power-cycle the laser, try again.</li>
+        <li>Mount the lasers above head height. Never aim beams at people.</li>
       </ol>
     </details>
     <button class="link" id="disconnect" hidden>Disconnect</button>
@@ -227,7 +281,7 @@ function guessActive() {
 
 function render() {
   const connected = !!(dev && dev.gatt.connected && settings);
-  $("pill").textContent = connected ? "Connected" : "Not connected";
+  $("pill").textContent = connected ? "Live" : "Offline";
   $("pill").classList.toggle("on", connected);
   $("connect").hidden = connected; $("connectAll").hidden = connected; $("disconnect").hidden = !connected;
   document.querySelectorAll(".show").forEach(b => {
@@ -557,12 +611,12 @@ function sendFrame(frame) {            // non-scene frames (built-in animations,
 function drawJoy(x = motion.x ?? 0, y = motion.y ?? 0, held = motion.x !== null) {
   const cv = $("joy"), g = cv.getContext("2d"), W = 600, R = 270;
   g.clearRect(0, 0, W, W);
-  g.strokeStyle = "#252a37"; g.lineWidth = 2;
+  g.strokeStyle = "#1e2126"; g.lineWidth = 2;
   g.beginPath(); g.arc(300, 300, R, 0, Math.PI * 2); g.stroke();
   g.beginPath(); g.moveTo(30, 300); g.lineTo(570, 300); g.moveTo(300, 30); g.lineTo(300, 570); g.stroke();
-  g.fillStyle = "#8a93a8"; g.font = "22px system-ui"; g.textAlign = "center";
+  g.fillStyle = "#4a4f58"; g.font = "20px JetBrains Mono, monospace"; g.textAlign = "center";
   g.fillText("UP", 300, 62); g.fillText("DOWN", 300, 556); g.fillText("L", 52, 308); g.fillText("R", 548, 308);
-  g.fillStyle = held ? "#3cf0a0" : "#3a4152";
+  g.fillStyle = held ? "#00e5ff" : "#2a2e35";
   g.beginPath(); g.arc(300 + x * R, 300 - y * R, 46, 0, Math.PI * 2); g.fill();
 }
 // Global X/Y position adjust (LightElf "xyCnf"): 10111213 [FF=don't save][auto][phase][Xcoarse][Xfine][Ycoarse][Yfine] pad 14151617.
