@@ -100,6 +100,11 @@
   .pens { display:grid; grid-template-columns:repeat(7,1fr); gap:6px; margin-top:10px; }
   .pens button { padding:0; height:28px; border-radius:6px; border:1px solid rgba(255,255,255,.08); }
   .pens button.on { outline:2px solid #fff; outline-offset:2px; }
+  .shapes { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .shape { padding:8px 4px 6px; display:flex; flex-direction:column; align-items:center; gap:4px; color:var(--text); }
+  .shape svg { width:100%; max-width:64px; aspect-ratio:1; background:#000; border-radius:6px; color:#9fe8ff; }
+  .shape span { font-size:11px; color:var(--dim); text-align:center; line-height:1.2; }
+  .shape.on { border-color:var(--accent); }
   .mine { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px; }
   .mine button { padding:6px; font-size:12px; position:relative; }
   .mine img { width:100%; aspect-ratio:1; display:block; background:#000; border-radius:4px; }
@@ -137,7 +142,8 @@
       <button class="show" data-show="mix"><i>F</i><b>Rave + Anim</b><span>Lasers' own mic: beams and animations.</span></button>
       <button class="show" data-show="anim"><i>G</i><b>Animations</b><span>Built-in drawings in motion.</span></button>
     </div>
-    <div class="seg" style="margin-top:8px">
+    <div class="seg" style="margin-top:8px;grid-template-columns:1fr 1fr 1fr">
+      <button id="openStatic">Static shapes</button>
       <button id="openDraw">Draw / upload</button>
       <button id="pauseBtn" class="stop">Blackout</button>
     </div>
@@ -190,9 +196,17 @@
   </div>
 </main>
 
+<div class="modal" id="staticModal" hidden>
+  <div class="sheet">
+    <header><h1 style="font-size:13px">Static shapes</h1><button id="closeStatic" aria-label="Close" title="Close" style="width:40px;height:40px;padding:0;font-size:22px;line-height:1;border-radius:50%">✕</button></header>
+    <div class="shapes" id="shapes"></div>
+    <p class="note" style="margin-top:12px">Tap a shape to project it still. Drag Aim to move it, use the colour buttons to recolour it. "Joined line" is long enough that the two heads on each machine overlap into one line.</p>
+  </div>
+</div>
+
 <div class="modal" id="drawModal" hidden>
   <div class="sheet">
-    <header><h1 style="font-size:18px">Your animation</h1><button class="link" id="closeDraw" style="width:auto;padding:4px">Close</button></header>
+    <header><h1 style="font-size:18px">Your animation</h1><button id="closeDraw" aria-label="Close" title="Close" style="width:40px;height:40px;padding:0;font-size:22px;line-height:1;border-radius:50%">✕</button></header>
     <canvas id="pad" width="600" height="600"></canvas>
     <div class="row" style="display:flex;justify-content:space-between;color:var(--dim);font-size:13px;margin-top:6px"><span id="ptCount">0 points</span><span>max 600</span></div>
     <div class="pens" id="pens"></div>
@@ -230,7 +244,7 @@ const SHOWS = {
   rave:    { label: "RAVE",    group: 7, pick: null, sound: true,  color: 8, speed: 255, chase: "rave" },
   club:    { label: "CLUB",    group: 7, pick: null, sound: false, color: 8, speed: 255, chase: "club" },
   lines:   { label: "LINES",   group: 2, pick: LINE_BEAMS,  sound: true,  color: 9, speed: 255 },
-  classic: { label: "CLASSIC", group: 1, pick: null,        sound: true,  color: 9, speed: 220 },
+  classic: { label: "CLASSIC", group: 1, pick: null,        sound: false, color: 9, speed: 200 },
   party:   { label: "PARTY SHOW", group: 7, pick: null, sound: true, color: 3, speed: 255, chase: "party" },
   mix:     { label: "RAVE + ANIMATIONS", group: 7, pick: null, sound: true, color: 9, speed: 255, chase: "mix" },
   anim:    { label: "ANIMATIONS", group: 7, pick: null, sound: false, color: 9, speed: 255, chase: "anim" },
@@ -360,7 +374,7 @@ const SET = [
 ];
 const SET_TICKS = SET.reduce((a, [, b]) => a + b * 8, 0);
 let lastSection = "";
-function partyStep(tick) {
+function legacyPartyStep(tick) {
   let t = tick % SET_TICKS, i = 0;
   while (t >= SET[i][1] * 8) { t -= SET[i][1] * 8; i++; }
   const [name, bars] = SET[i], bar = Math.floor(t / 8), pos = t % 8;
@@ -428,7 +442,10 @@ $("pens").children[0].classList.add("on");
 $("undo").onclick = () => { strokes.pop(); redraw(); };
 $("clearPad").onclick = () => { strokes = []; redraw(); };
 $("openDraw").onclick = () => { $("drawModal").hidden = false; redraw(); renderMine(); };
-$("closeDraw").onclick = () => $("drawModal").hidden = true;
+const closeSheet = () => { $("drawModal").hidden = true; };
+$("closeDraw").onclick = closeSheet;
+$("drawModal").addEventListener("click", e => { if (e.target === $("drawModal")) closeSheet(); });   // tap outside the sheet
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("drawModal").hidden) closeSheet(); });
 
 // Upload: trace edges of a bold image into simplified strokes.
 function rdp(p, eps) {
@@ -499,7 +516,13 @@ $("sendDraw").onclick = async () => {
   if (!strokes.length) return;
   stopChase(); active = null; render();
   blackedOut = false;
-  try { await prepDraw(); await write(drawFrame(strokesToPoints(strokes))); status("Your drawing is on the lasers. Tap a show to go back."); }
+  try {
+    await prepDraw();
+    drawingScene = { ...baseScene(), size: 255, draw: strokesToPoints(strokes) };
+    lastScene = drawingScene;
+    await write(drawFrameCfg(drawingScene.draw, drawingScene));
+    status("Your drawing is on the lasers. Drag Aim to move it; tap a show to go back.");
+  }
   catch (e) { status(e.message, true); }
 };
 // Saved drawings (this phone only) join the ANIMATIONS show.
@@ -616,8 +639,8 @@ setInterval(async () => {
     if (sc.draw) {                                     // drawn shapes (smooth circles): big frames, max ~4 Hz
       if (performance.now() - lastDrawAt < 240) { pending = pending || sc; return; }
       lastDrawAt = performance.now();
-      inProgram = false;
-      await write(drawFrameCfg(sc.draw, sc));
+      if (!inProgram) { const p = new Uint8Array(settings); p[0] = 7; await write(settingsFrame(p)); inProgram = true; }
+      await write(drawFrameCfg(sc.draw, sc));       // stays in Program mode -> no flash when switching back to scenes
     } else {
       if (!inProgram) { const p = new Uint8Array(settings); p[0] = 7; await write("C0C1C2C3" + hex(p) + "C4C5C6C7"); inProgram = true; }
       await write(sceneFrame(sc));
@@ -702,8 +725,10 @@ function releaseTakeover() {
   aimActive = false;
   if (aimReturn) startShow(aimReturn); else { pending = null; }
 }
+let drawingScene = null;
 function onJoy() {
   if (!settings || blackedOut && !aimActive && !joyDown) return;
+  if (drawingScene && !chase) { queueScene({ ...drawingScene }); return; }     // move the drawing (sender applies the position)
   takeover();
   queueScene({ ...(lastScene || baseScene()) });          // the sender applies the joystick position to this scene
 }
@@ -815,6 +840,13 @@ const F = {
   wave:     { label: "Figure-8 wave",   groups: [G.line], pats: [0, 6],       dens: 1, m: { h: .35, v: .55 }, wave: 110 },
   roll:     { label: "3D roll",         groups: [G.line], pats: [0, 22],      dens: 2, m: { hflip: .6, v: .35 } },
   anim:     { label: "Animation",       groups: G.anims, dens: 1, m: { h: .2, v: .25 } },
+  // Club line families: 0 horizontal, 1 diagonal, 4 V, 6/7 twin & split lines, 16 vertical, 18 vertical bars,
+  // 19/20/21 three/four-way, 22 cross, 23 X, 25 five rays, 39 eight rays
+  parallel: { label: "Parallel lines",  groups: [G.line], pats: [6, 7, 18, 0], dens: 1, m: { v: .4 } },
+  radial:   { label: "Radial beams",    groups: [G.line], pats: [19, 20, 21, 25, 39], dens: 2, m: { h: .35 } },
+  diag:     { label: "Diagonals",       groups: [G.line], pats: [1, 4, 23], dens: 2, m: { h: .3, v: .3 } },
+  slowRot:  { label: "Slow rotation",   groups: [G.line], pats: [22, 25, 39, 21], dens: 2, m: { rot: .3 } },
+  vertical: { label: "Vertical sheets", groups: [G.line], pats: [16, 18], dens: 1, m: { h: .35 } },
 };
 // What a formation may become (coherent transitions, not a random picker).
 const NEXT = {
@@ -825,13 +857,15 @@ const NEXT = {
   tunnelX: ["xform", "raysDense", "tunnel"], rays: ["raysDense", "fan", "cross", "wave"],
   raysDense: ["xform", "tunnelX", "rays"], wave: ["sky", "wideFan", "tunnel", "roll"],
   roll: ["sheet", "wave", "cross"], anim: ["wave", "sky", "fan", "tunnel"],
+  parallel: ["sheet", "vertical", "sky", "diag"], radial: ["slowRot", "fan", "wideFan", "diag"], diag: ["parallel", "radial", "cross"],
+  slowRot: ["radial", "fan", "circle"], vertical: ["parallel", "sheet", "sky"],
 };
 // Which formations suit each section, with weights.
 const SUIT = {
   breakdown: { sky: 3, wave: 3, wideFan: 2, sheet: 2, roll: 1, tunnel: 1, circle: 2 },
   build:     { fan: 2, rotFan: 3, tunnel: 3, rays: 2, cross: 1 },
   drop:      { xform: 3, tunnelX: 3, raysDense: 3, cross: 2, fan: 1, rotFan: 1 },
-  club:      { sky: 3, wideFan: 3, sheet: 2, wave: 2, fan: 2, tunnel: 2, circle: 2, cross: 1, roll: 1 },
+  club:      { sky: 3, wideFan: 3, sheet: 2, wave: 2, fan: 2, parallel: 3, radial: 3, diag: 2, slowRot: 2, vertical: 2, circle: 1 },
 };
 
 // --- Expansion / contraction layer (size 0-255, verified live). Values are 0..1 of full size.
@@ -849,7 +883,7 @@ const EXP = {
 };
 const EXP_FOR = {
   breakdown: ["breathe", "swell", "irregular"], build: ["swell", "kick", "breathe"],
-  drop: ["kick", "snap", "max", "collapse", "irregular"], club: ["breathe", "swell", "irregular", "max"],
+  drop: ["kick", "snap", "max", "collapse", "irregular"], club: ["breathe", "swell", "max"],
 };
 function expansionNow() {
   if (!show.exp) return 1;
@@ -858,7 +892,7 @@ function expansionNow() {
   const b = (performance.now() - show.expT0) / beatMs, ph = Math.min(1, sinceBeat / beatMs);
   let v = EXP[show.exp](b, ph);
   if (show.sec.name === "build") v = Math.max(.2, v * (.4 + .6 * (1 - show.sec.left / show.sec.total)));  // builds widen over time
-  return Math.max(.12, Math.min(1, v));
+  return Math.max(chase === "club" ? .5 : .12, Math.min(1, v));
 }
 // 10 Hz expansion refresh between beats (looks + motion stay as chosen on the beat).
 setInterval(() => { if (chase === "club" && show.form && tx && !txBusy) queueScene(buildScene()); }, 100);   // only the motion-engine show streams
@@ -914,10 +948,12 @@ function newFormation(sectionChange) {
   show.colIdx = 0;
   const f = F[show.form], e = sectionEnergy();
   // User feedback: previous speed = the slowest it should ever get. Floor at ~55%, climbing to max with energy.
-  const speed = k => k ? Math.min(.92, .45 + .5 * Math.min(1, k * (.7 + .6 * e))) : 0;   // a touch slower than v19
+  const speed = chase === "club"
+    ? (k => k ? .28 + .3 * Math.min(1, k) : 0)                                 // CLUB: smooth, controlled sweeps
+    : (k => k ? Math.min(.92, .45 + .5 * Math.min(1, k * (.7 + .6 * e))) : 0);
   show.tgt = { h: speed(f.m.h), v: speed(f.m.v), hflip: speed(f.m.hflip), vflip: speed(f.m.vflip),
                rot: f.m.rot ? show.spinSign * speed(f.m.rot) : 0 };
-  if (chase === "club") show.tgt.rot *= .8;                               // CLUB: spin slightly reined in
+  if (chase === "club") { show.tgt.rot *= .6; show.tgt.hflip = 0; show.tgt.vflip = 0; }   // CLUB: no 3D roll, gentle spin
 }
 
 // Smooth motion toward the target (momentum instead of jumps). Called every half beat.
@@ -969,16 +1005,18 @@ function buildScene() {
 const LAYERS = ["expand", "wave", "roll", "spin", "split", "flow", "flip3d"];
 show.layers = new Set(["expand"]); show.layerHist = [];
 function layerShuffle(S) {
-  const n = S === "drop" ? pick([2, 3, 3, 4]) : S === "build" ? pick([2, 3]) : pick([1, 2]);
+  const pool = chase === "club" ? ["expand", "wave", "flow", "split"] : LAYERS;
+  const n = chase === "club" ? pick([1, 2]) : S === "drop" ? pick([2, 3, 3, 4]) : S === "build" ? pick([2, 3]) : pick([1, 2]);
   let best = null;
   for (let tries = 0; tries < 6; tries++) {           // avoid the last 3 mixes
-    const mix = [...LAYERS].sort(() => Math.random() - .5).slice(0, n).sort().join(",");
+    const mix = [...pool].sort(() => Math.random() - .5).slice(0, n).sort().join(",");
     if (!show.layerHist.slice(-3).includes(mix)) { best = mix; break; }
     best = mix;
   }
   show.layerHist.push(best);
   show.layers = new Set(best.split(","));
   if (show.layers.has("expand") && !F[show.form].drawn && Math.random() < .6) { show.exp = pick(EXP_FOR[chase === "club" ? "club" : S]); show.expT0 = performance.now(); }
+  if (chase === "club") return;
   if (show.layers.has("spin")) { show.spinSign *= -1; show.tgt.rot = show.spinSign * (S === "drop" ? rnd(.75, 1) : rnd(.55, .8)); }
   if (show.layers.has("roll")) show.tgt.hflip = Math.max(show.tgt.hflip, rnd(.65, 1));
   if (show.layers.has("flip3d")) show.tgt.vflip = rnd(.6, 1); else show.tgt.vflip = 0;
@@ -1033,17 +1071,17 @@ function chaseStep() {
   show.wasMic = false;
 
   // Phrases: formations evolve on phrase boundaries, not every beat.
-  const phraseBars = chase === "club" ? (S === "drop" ? 2 : 4) : S === "drop" ? pick([1, 2]) : 2;
+  const phraseBars = chase === "club" ? (S === "drop" ? 4 : 8) : S === "drop" ? pick([1, 2]) : 2;
   if (inBar === 0 && bar > 0 && bar % phraseBars === 0 && show.sec.left !== show.sec.total) newFormation(false);
 
   // Build: speeds keep rising inside the phrase; last half bar goes dark for anticipation.
   if (S === "build") {
-    const ramp = .5 + .5 * prog;
-    for (const k of ["h", "v", "hflip"]) if (show.tgt[k]) show.tgt[k] = Math.min(1, Math.max(show.tgt[k], ramp));
+    const ramp = chase === "club" ? .35 + .2 * prog : .5 + .5 * prog;      // CLUB builds only lift gently
+    for (const k of ["h", "v", "hflip"]) if (show.tgt[k]) show.tgt[k] = Math.min(chase === "club" ? .58 : 1, Math.max(show.tgt[k], ramp));
     if (chase !== "club" && show.sec.left === 1 && inBar >= 6) { if (inBar === 6) blackout(); return; }
   }
   // Breakdowns settle quickly at first (contrast after a drop), then glide.
-  easeMotion(S === "drop" ? .45 : S === "build" ? .35 : .25);           // gentle glides between motion states
+  easeMotion(chase === "club" ? .15 : S === "drop" ? .45 : S === "build" ? .35 : .25);   // gentle glides between motion states
   if (inBar === 0) layerShuffle(S);                  // every bar: vary which feature layers are active
 
   // Micro-events: accents on beats / snares, never a full reset.
@@ -1051,7 +1089,7 @@ function chaseStep() {
     const isSnare = inBar === 2 || inBar === 6;
     if (chase === "club") {
       if (inBar === 0) show.colIdx++;                                          // colour breathes per bar
-      if (isSnare && bar % 4 === 3) { show.m.rot = show.spinSign * .7; show.spinSign *= -1; }  // rare spin accent
+      if (inBar === 0 && bar % 4 === 2 && F[show.form].pats) show.graph = 4 * pick(F[show.form].pats);  // same family, new design
     } else if (S === "drop") {
       show.colIdx++;                                                           // colour accent every beat
       if (Math.random() < .5) { show.spinSign *= -1; show.tgt.rot = show.spinSign * Math.max(.5, Math.abs(show.tgt.rot)); show.m.rot = show.tgt.rot; } // spin reversal on the kick
@@ -1100,7 +1138,7 @@ function stopChase() {
 let blackedOut = false;
 async function startShow(name) {
   const s = SHOWS[name]; if (!s || !settings) return;
-  blackedOut = false; aimActive = false;
+  blackedOut = false; aimActive = false; drawingScene = null;
   stopChase();
   active = name; render();
   if (name === "party") { chase = "party"; await startParty(); }
@@ -1117,30 +1155,172 @@ async function startShow(name) {
 }
 document.querySelectorAll(".show").forEach(b => b.onclick = () => startShow(b.dataset.show));
 
-// ---------- PARTY: laser-run playlist (verified: lasers cycle a D0 playlist on their own timer; follower copies) ----------
-const PARTY_FORMS = ["sky", "wideFan", "fan", "rotFan", "sheet", "cross", "wave", "roll", "xform", "fan", "sky"];
-let partyTimer = null;
-function partyScene(formName, pal, i) {
-  const f = F[formName], k = v => v ? 128 + Math.round(Math.min(1, (.35 + .4 * v) * Math.min(1, live.speed)) * 127) : 0;
-  const color = live.color ?? (pal.split && i % 2 ? C.seg2 : pal.cols[i % pal.cols.length]);
-  const rot = f.m.rot ? (i % 2 ? 128 : 192) + Math.round(.5 * Math.min(1, live.speed) * 63) : 0;
-  const c = [4 * pick(f.pats), G.line, color, f.flow ?? 40, 255, 0, rot, k(f.m.hflip), k(f.m.vflip), k(f.m.h), k(f.m.v) || (f.vpos ? posByte(f.vpos) : 0), f.wave || 0, 0];
-  const secs = pick([4, 5, 6, 8]);
-  return (c.map(v => v.toString(16).padStart(2, "0")).join("") + (secs * 10).toString(16).padStart(2, "0")).padEnd(30, "0");
-}
-function partyPlaylist() {
-  const pals = Object.keys(PALETTES), scenes = [];
-  for (let i = 0; i < 12; i++) {
-    const pal = PALETTES[pals[Math.floor(i / 4 + Math.random() * pals.length) % pals.length]];
-    scenes.push(partyScene(PARTY_FORMS[(i + Math.floor(Math.random() * 3)) % PARTY_FORMS.length], pal, i));
+// ---------- PARTY: choreographed set pieces ----------
+// Each set is a sequence of steps. A step = one line-table pattern (scene value = 4 x number) + colour + size +
+// the lasers' own motion (sweep / spin, verified to keep flowing when the look changes). Size ramps are sent as a
+// few scenes (size changes live, verified). Line table: 0 line, 1 diagonal, 4 V, 6 twin lines, 7 split line,
+// 16 vertical, 18 vertical bars, 21 three-way, 22 cross, 23 X, 25 five rays, 26 triangle, 27 square, 28 diamond,
+// 29 pentagon, 30 octagon, 33 4-point star, 34 star, 36 pentagram, 37 8-point star, 38 12-point star, 39 eight rays,
+// 40 pinwheel, 41 tri-fan, 44 cross shape, 45 hourglass, 46 four squares, 47 row of squares, 48 long bar.
+// (No playlist upload: the lasers' playlist layout for this model isn't verified and rendered as stray squares.)
+const SP = v => v ? 128 + Math.round(Math.min(1, v) * 127) : 0;    // sweep speed 0..1
+const ROT = v => v ? (v > 0 ? 128 : 192) + Math.round(Math.min(1, Math.abs(v)) * 63) : 0;
+const PARTY_SETS = [
+  { name: "Squares to Line", pal: ["cyan", "white", "pink"], steps: [
+    { p: 27, size: [70, 120], beats: 8 },
+    { p: 27, size: [120, 255], v: .2, beats: 8 },
+    { p: 46, v: .25, beats: 8 },
+    { p: 47, h: .25, beats: 8 },
+    { p: 48, h: .2, v: .2, beats: 8 },
+    { p: 0, size: [180, 255], v: .3, beats: 16 } ] },
+  { name: "Star Bloom", pal: ["pink", "cyan", "white"], steps: [
+    { p: 33, size: [60, 160], beats: 8 },
+    { p: 34, size: [160, 255], rot: .2, beats: 8 },
+    { p: 37, rot: .25, beats: 8 },
+    { p: 38, rot: -.3, beats: 8 },
+    { p: 39, rot: .3, h: .2, beats: 8 },
+    { p: 25, h: .3, beats: 16 } ] },
+  { name: "Triangle Twist", pal: ["green", "cyan", "blue"], steps: [
+    { p: 26, size: [90, 255], beats: 8 },
+    { p: 45, vflipPos: 32, beats: 8 },
+    { p: 41, rot: .25, beats: 8 },
+    { p: 40, rot: -.3, beats: 8 },
+    { p: 21, rot: .2, h: .25, beats: 16 } ] },
+  { name: "Crossfire", pal: ["red", "blue", "white"], steps: [
+    { p: 22, beats: 8 },
+    { p: 23, h: .25, v: .2, beats: 8 },
+    { p: 4, v: .3, beats: 8 },
+    { p: 1, h: .3, beats: 8 },
+    { p: 23, size: [120, 255], h: .3, v: .3, beats: 16 } ] },
+  { name: "Liquid Sky", pal: ["blue", "cyan"], steps: [
+    { p: 0, vpos: .75, h: .2, wave: 130, beats: 16 },
+    { p: 6, vpos: .75, h: .25, wave: 130, beats: 8 },
+    { p: 7, vpos: .6, h: .3, beats: 8 },
+    { p: 18, h: .3, beats: 8 },
+    { p: 16, h: .35, beats: 16 } ] },
+  { name: "Geometry", pal: ["white", "pink", "cyan"], steps: [
+    { p: 28, size: [100, 255], beats: 8 },
+    { p: 29, rot: .15, beats: 8 },
+    { p: 30, rot: .2, beats: 8 },
+    { p: 36, rot: -.25, beats: 8 },
+    { p: 44, h: .2, v: .2, beats: 16 } ] },
+  { name: "Tunnel", pal: ["cyan", "pink", "blue"], steps: [
+    { rings: 1, size: [60, 255], beats: 8 },
+    { rings: 2, rot: .25, beats: 8 },
+    { rings: 3, size: [255, 120], rot: -.3, beats: 8 },
+    { rings: 3, size: [120, 255], v: .2, beats: 16 } ] },
+];
+let partyTimer = null, partyQueue = [], partySet = null, partyStep = 0, partyStepAt = 0, partyRamp = null;
+function partyLook(st, i) {
+  const pal = partySet.pal, col = live.color ?? C[pal[i % pal.length]];
+  const k = Math.min(1.2, live.speed);
+  const sc = { ...baseScene(), graph: 4 * (st.p || 0), group: G.line, color: col, flow: 40, size: 255,
+               hmove: SP((st.h || 0) * k), vmove: SP((st.v || 0) * k) || (st.vpos ? posByte(st.vpos) : 0),
+               rot: ROT((st.rot || 0) * k), hflip: 0, vflip: st.vflipPos || 0, wave: st.wave || 0 };
+  if (st.rings) {
+    const toIdx = c => ({ [C.red]: 1, [C.green]: 2, [C.blue]: 3, [C.yellow]: 4, [C.cyan]: 5, [C.pink]: 6, [C.white]: 7 })[c] || 5;
+    sc.draw = rings(st.rings, live.color !== null ? [toIdx(live.color)] : pal.map(p => toIdx(C[p])));
   }
-  return ("D0D1D2D3" + (0x80 | scenes.length).toString(16).padStart(2, "0") + "00" + scenes.map(x => x + "FF").join("") + "D4D5D6D7").toUpperCase();
+  return sc;
+}
+function nextPartySet() {
+  if (!partyQueue.length) partyQueue = [...PARTY_SETS].sort(() => Math.random() - .5).filter(x => x !== partySet);
+  partySet = partyQueue.shift(); partyStep = 0;
+  status("PARTY SET · " + partySet.name);
+}
+function partyTick() {                     // every 100 ms: advance steps on time, ramp size smoothly
+  if (chase !== "party" || !partySet) return;
+  const now = performance.now(), beatMs = 60000 / BPM;
+  const st = partySet.steps[partyStep];
+  const dur = st.beats * beatMs;
+  const t = Math.min(1, (now - partyStepAt) / dur);
+  if (st.size) {
+    const size = Math.round(st.size[0] + (st.size[1] - st.size[0]) * t);
+    if (partyRamp === null || Math.abs(size - partyRamp) >= 12) { partyRamp = size; queueScene({ ...partyLook(st, partyStep), size }); }
+  }
+  if (now - partyStepAt >= dur) {
+    partyStep++;
+    if (partyStep >= partySet.steps.length) nextPartySet();
+    partyStepAt = now; partyRamp = null;
+    const nx = partySet.steps[partyStep];
+    queueScene({ ...partyLook(nx, partyStep), size: nx.size ? nx.size[0] : 255 });
+  }
 }
 async function startParty() {
   const p = new Uint8Array(settings); p[0] = 7; p[8] = 0;
   await writeSure(settingsFrame(p)); inProgram = true;
-  await write(partyPlaylist());
-  partyTimer = setInterval(() => { if (chase === "party") write(partyPlaylist()).catch(() => {}); }, 60000);
+  await write(sceneFrame({ ...baseScene(), size: 0 }));          // replaces any stored playlist
+  partyQueue = []; partySet = null; nextPartySet(); partyStepAt = performance.now(); partyRamp = null;
+  const st = partySet.steps[0];
+  queueScene({ ...partyLook(st, 0), size: st.size ? st.size[0] : 255 });
+  partyTimer = setInterval(partyTick, 100);
+}
+function partyResend() { if (partySet) { const st = partySet.steps[partyStep]; queueScene({ ...partyLook(st, partyStep), size: partyRamp ?? 255 }); } }
+
+// ---------- STATIC SHAPES: still shapes, picked from visual tiles; Aim moves them, colour buttons recolour ----------
+// Line-table patterns are sent as one still scene (verified path). Circle / rings / heart are drawn (smooth).
+const STATIC_PATTERNS = [{"p":0,"name":"Joined line","pts":[[-400,0,0],[-392,0,7],[-383,0,7],[-374,0,7],[-365,0,7],[-356,0,7],[-347,0,7],[-338,0,7],[-329,0,1],[-320,0,1],[-312,0,1],[-303,0,1],[-294,0,1],[-285,0,1],[-276,0,1],[-267,0,1],[-258,0,7],[-249,0,7],[-240,0,7],[-231,0,7],[-222,0,7],[-214,0,7],[-205,0,7],[-196,0,2],[-187,0,2],[-178,0,2],[-169,0,2],[-160,0,2],[-151,0,2],[-142,0,2],[-134,0,2],[-125,0,7],[-116,0,7],[-107,0,7],[-98,0,7],[-89,0,7],[-80,0,7],[-71,0,7],[-62,0,3],[-53,0,3],[-44,0,3],[-36,0,3],[-27,0,3],[-18,0,3],[-9,0,3],[0,0,3],[9,0,7],[18,0,7],[27,0,7],[36,0,7],[44,0,7],[53,0,7],[62,0,7],[71,0,1],[80,0,1],[89,0,1],[98,0,1],[107,0,1],[116,0,1],[125,0,1],[134,0,1],[142,0,7],[151,0,7],[160,0,7],[169,0,7],[178,0,7],[187,0,7],[196,0,7],[205,0,2],[214,0,2],[222,0,2],[231,0,2],[240,0,2],[249,0,2],[258,0,2],[267,0,2],[276,0,7],[285,0,7],[294,0,7],[303,0,7],[312,0,7],[320,0,7],[329,0,7],[338,0,3],[347,0,3],[356,0,3],[365,0,3],[374,0,3],[383,0,3],[392,0,3],[400,0,3]]},{"p":16,"name":"Vertical line","pts":[[0,-400,0],[0,-390,4],[0,-380,4],[0,-370,4],[0,-360,4],[0,-350,4],[0,-340,4],[0,-330,4],[0,-320,4],[0,-310,4],[0,-300,4],[0,-290,4],[0,-280,4],[0,-270,4],[0,-260,4],[0,-250,4],[0,-240,4],[0,-230,4],[0,-220,4],[0,-210,4],[0,-200,4],[0,-190,4],[0,-180,4],[0,-170,4],[0,-160,4],[0,-150,4],[0,-140,4],[0,-130,4],[0,-120,4],[0,-110,4],[0,-100,4],[0,-90,4],[0,-80,4],[0,-70,4],[0,-60,4],[0,-50,4],[0,-40,4],[0,-30,4],[0,-20,4],[0,-10,4],[0,0,4],[0,10,4],[0,20,4],[0,30,4],[0,40,4],[0,50,4],[0,60,4],[0,70,4],[0,80,4],[0,90,4],[0,100,4],[0,110,4],[0,120,4],[0,130,4],[0,140,4],[0,150,4],[0,160,4],[0,170,4],[0,180,4],[0,190,4],[0,200,4],[0,210,4],[0,220,4],[0,230,4],[0,240,4],[0,250,4],[0,260,4],[0,270,4],[0,280,4],[0,290,4],[0,300,4],[0,310,4],[0,320,4],[0,330,4],[0,340,4],[0,350,4],[0,360,4],[0,370,4],[0,380,4],[0,390,4],[0,400,4]]},{"p":6,"name":"Twin lines","pts":[[-400,400,0],[-390,400,7],[-380,400,7],[-370,400,7],[-360,400,7],[-350,400,7],[-340,400,7],[-330,400,7],[-320,400,7],[-310,400,7],[-300,400,7],[-290,400,1],[-280,400,1],[-270,400,1],[-260,400,1],[-250,400,1],[-240,400,1],[-230,400,1],[-220,400,1],[-210,400,1],[-200,400,1],[-190,400,5],[-180,400,5],[-170,400,5],[-160,400,5],[-150,400,5],[-140,400,5],[-130,400,5],[-120,400,5],[-110,400,5],[-100,400,5],[-90,400,2],[-80,400,2],[-70,400,2],[-60,400,2],[-50,400,2],[-40,400,2],[-30,400,2],[-20,400,2],[-10,400,2],[0,400,2],[10,400,6],[20,400,6],[30,400,6],[40,400,6],[50,400,6],[60,400,6],[70,400,6],[80,400,6],[90,400,6],[100,400,6],[110,400,3],[120,400,3],[130,400,3],[140,400,3],[150,400,3],[160,400,3],[170,400,3],[180,400,3],[190,400,3],[200,400,3],[210,400,4],[220,400,4],[230,400,4],[240,400,4],[250,400,4],[260,400,4],[270,400,4],[280,400,4],[290,400,4],[300,400,4],[310,400,7],[320,400,7],[330,400,7],[340,400,7],[350,400,7],[360,400,7],[370,400,7],[380,400,7],[390,400,7],[400,400,7],[-400,-400,0],[-390,-400,7],[-380,-400,7],[-370,-400,7],[-360,-400,7],[-350,-400,7],[-340,-400,7],[-330,-400,7],[-320,-400,7],[-310,-400,7],[-300,-400,7],[-290,-400,1],[-280,-400,1],[-270,-400,1],[-260,-400,1],[-250,-400,1],[-240,-400,1],[-230,-400,1],[-220,-400,1],[-210,-400,1],[-200,-400,1],[-190,-400,5],[-180,-400,5],[-170,-400,5],[-160,-400,5],[-150,-400,5],[-140,-400,5],[-130,-400,5],[-120,-400,5],[-110,-400,5],[-100,-400,5],[-90,-400,2],[-80,-400,2],[-70,-400,2],[-60,-400,2],[-50,-400,2],[-40,-400,2],[-30,-400,2],[-20,-400,2],[-10,-400,2],[0,-400,2],[10,-400,6],[20,-400,6],[30,-400,6],[40,-400,6],[50,-400,6],[60,-400,6],[70,-400,6],[80,-400,6],[90,-400,6],[100,-400,6],[110,-400,3],[120,-400,3],[130,-400,3],[140,-400,3],[150,-400,3],[160,-400,3],[170,-400,3],[180,-400,3],[190,-400,3],[200,-400,3],[210,-400,4],[220,-400,4],[230,-400,4],[240,-400,4],[250,-400,4],[260,-400,4],[270,-400,4],[280,-400,4],[290,-400,4],[300,-400,4],[310,-400,7],[320,-400,7],[330,-400,7],[340,-400,7],[350,-400,7],[360,-400,7],[370,-400,7],[380,-400,7],[390,-400,7],[400,-400,7]]},{"p":22,"name":"Cross","pts":[[-403,0,0],[-336,0,1],[-269,0,1],[-202,0,1],[-134,0,1],[-67,0,1],[0,0,1],[67,0,2],[134,0,2],[202,0,2],[269,0,2],[336,0,2],[403,0,2],[0,403,0],[0,336,6],[0,269,6],[0,202,6],[0,134,6],[0,67,6],[0,0,6],[0,-67,7],[0,-134,7],[0,-202,7],[0,-269,7],[0,-336,7],[0,-403,7]]},{"p":23,"name":"X","pts":[[-390,390,0],[-390,390,2],[-312,312,2],[-234,234,2],[-156,156,2],[-78,78,2],[0,0,2],[78,-78,7],[156,-156,7],[234,-234,7],[312,-312,7],[390,-390,7],[390,390,0],[390,390,5],[312,312,5],[234,234,5],[156,156,5],[78,78,5],[0,0,5],[-78,-78,6],[-156,-156,6],[-234,-234,6],[-312,-312,6],[-390,-390,6]]},{"p":4,"name":"V","pts":[[-400,400,0],[-390,390,4],[-380,380,4],[-370,370,4],[-360,360,4],[-350,350,4],[-340,340,7],[-330,330,7],[-320,320,7],[-310,310,7],[-300,300,7],[-290,290,7],[-280,280,6],[-270,270,6],[-260,260,6],[-250,250,6],[-240,240,7],[-230,230,7],[-220,220,7],[-210,210,7],[-200,200,7],[-190,190,7],[-180,180,4],[-170,170,4],[-160,160,4],[-150,150,4],[-140,140,7],[-130,130,7],[-120,120,7],[-110,110,7],[-100,100,7],[-90,90,7],[-80,80,6],[-70,70,6],[-60,60,6],[-50,50,6],[-40,40,7],[-30,30,7],[-20,20,7],[-10,10,7],[0,0,7],[10,10,4],[20,20,4],[30,30,4],[40,40,4],[50,50,4],[60,60,7],[70,70,7],[80,80,7],[90,90,7],[100,100,7],[110,110,7],[120,120,6],[130,130,6],[140,140,6],[150,150,6],[160,160,6],[170,170,7],[180,180,7],[190,190,7],[200,200,7],[210,210,7],[220,220,7],[230,230,4],[240,240,4],[250,250,4],[260,260,4],[270,270,7],[280,280,7],[290,290,7],[300,300,7],[310,310,7],[320,320,7],[330,330,6],[340,340,6],[350,350,6],[360,360,6],[370,370,7],[380,380,7],[390,390,7],[400,400,7]]},{"p":26,"name":"Triangle","pts":[[-363,-210,0],[-315,-210,7],[-284,-210,7],[-252,-210,7],[-220,-210,7],[-189,-210,7],[-158,-210,7],[-126,-210,7],[-94,-210,7],[-63,-210,7],[-32,-210,7],[0,-210,7],[32,-210,7],[63,-210,7],[94,-210,7],[126,-210,7],[158,-210,7],[189,-210,7],[220,-210,7],[252,-210,7],[284,-210,7],[315,-210,7],[363,-210,7],[339,-168,2],[315,-126,2],[299,-99,2],[284,-70,2],[268,-44,2],[252,-15,2],[236,10,2],[220,39,2],[205,65,2],[189,92,2],[173,119,2],[158,145,2],[142,168,2],[126,203,2],[110,229,2],[94,257,2],[79,285,2],[63,311,2],[47,338,2],[32,365,2],[16,392,2],[0,420,2],[-16,392,4],[-32,365,4],[-47,338,4],[-63,311,4],[-79,285,4],[-94,257,4],[-110,229,4],[-126,203,4],[-142,168,4],[-158,145,4],[-173,119,4],[-189,92,4],[-205,65,4],[-220,39,4],[-236,10,4],[-252,-15,4],[-268,-44,4],[-284,-70,4],[-299,-99,4],[-315,-126,4],[-339,-168,4],[-363,-210,4]]},{"p":27,"name":"Square","pts":[[-400,400,0],[-360,400,7],[-320,400,7],[-280,400,7],[-240,400,7],[-200,400,7],[-160,400,7],[-120,400,7],[-80,400,7],[-40,400,7],[0,400,7],[40,400,7],[80,400,7],[120,400,7],[160,400,7],[240,400,7],[280,400,7],[320,400,7],[360,400,7],[400,400,7],[400,360,4],[400,320,4],[400,280,4],[400,240,4],[400,200,4],[400,160,4],[400,120,4],[400,80,4],[400,40,4],[400,0,4],[400,-40,4],[400,-80,4],[400,-120,4],[400,-160,4],[400,-200,4],[400,-240,4],[400,-280,4],[400,-320,4],[400,-360,4],[400,-400,4],[360,-400,5],[320,-400,5],[280,-400,5],[240,-400,5],[200,-400,5],[160,-400,5],[120,-400,5],[80,-400,5],[40,-400,5],[0,-400,5],[-40,-400,5],[-80,-400,5],[-120,-400,5],[-160,-400,5],[-240,-400,5],[-280,-400,5],[-320,-400,5],[-360,-400,5],[-400,-400,5],[-400,-360,6],[-400,-320,6],[-400,-280,6],[-400,-240,6],[-400,-200,6],[-400,-160,6],[-400,-120,6],[-400,-80,6],[-400,-40,6],[-400,0,6],[-400,40,6],[-400,80,6],[-400,120,6],[-400,160,6],[-400,200,6],[-400,240,6],[-400,280,6],[-400,320,6],[-400,360,6],[-400,400,6]]},{"p":28,"name":"Diamond","pts":[[-400,0,7],[-392,8,7],[-384,16,7],[-376,24,7],[-368,32,7],[-360,40,7],[-352,48,2],[-344,56,2],[-336,64,2],[-328,72,2],[-320,80,2],[-312,88,7],[-304,96,7],[-296,104,7],[-288,112,7],[-280,120,7],[-272,128,2],[-264,136,2],[-256,144,2],[-248,152,2],[-240,160,2],[-232,168,7],[-224,176,7],[-216,184,7],[-208,192,7],[-200,200,7],[-192,208,2],[-184,216,2],[-176,224,2],[-168,232,2],[-160,240,2],[-152,248,7],[-144,256,7],[-136,264,7],[-128,272,7],[-120,280,7],[-112,288,2],[-104,296,2],[-96,304,2],[-88,312,2],[-80,320,2],[-72,328,7],[-64,336,7],[-56,344,7],[-48,352,7],[-40,360,7],[-32,368,2],[-24,376,2],[-16,384,2],[-8,392,2],[0,400,2],[8,392,7],[16,384,7],[24,376,7],[32,368,7],[40,360,7],[48,352,2],[56,344,2],[64,336,2],[72,328,2],[80,320,2],[88,312,7],[96,304,7],[104,296,7],[112,288,7],[120,280,7],[128,272,2],[136,264,2],[144,256,2],[152,248,2],[160,240,2],[168,232,7],[176,224,7],[184,216,7],[192,208,7],[200,200,7],[208,192,2],[216,184,2],[224,176,2],[232,168,2],[240,160,2],[248,152,7],[256,144,7],[264,136,7],[272,128,7],[280,120,7],[288,112,2],[296,104,2],[304,96,2],[312,88,2],[320,80,2],[328,72,7],[336,64,7],[344,56,7],[352,48,7],[360,40,7],[368,32,2],[376,24,2],[384,16,2],[392,8,2],[400,0,2],[392,-8,7],[384,-16,7],[376,-24,7],[368,-32,7],[360,-40,7],[352,-48,2],[344,-56,2],[336,-64,2],[328,-72,2],[320,-80,2],[312,-88,7],[304,-96,7],[296,-104,7],[288,-112,7],[280,-120,7],[272,-128,2],[264,-136,2],[256,-144,2],[248,-152,2],[240,-160,2],[232,-168,7],[224,-176,7],[216,-184,7],[208,-192,7],[200,-200,7],[192,-208,2],[184,-216,2],[176,-224,2],[168,-232,2],[160,-240,2],[152,-248,7],[144,-256,7],[136,-264,7],[128,-272,7],[120,-280,7],[112,-288,2],[104,-296,2],[96,-304,2],[88,-312,2],[80,-320,2],[72,-328,7],[64,-336,7],[56,-344,7],[48,-352,7],[40,-360,7],[32,-368,2],[24,-376,2],[16,-384,2],[8,-392,2],[0,-400,2],[-8,-392,7],[-16,-384,7],[-24,-376,7],[-32,-368,7],[-40,-360,7],[-48,-352,2],[-56,-344,2],[-64,-336,2],[-72,-328,2],[-80,-320,2],[-88,-312,7],[-96,-304,7],[-104,-296,7],[-112,-288,7],[-120,-280,7],[-128,-272,2],[-136,-264,2],[-144,-256,2],[-152,-248,2],[-160,-240,2],[-168,-232,7],[-176,-224,7],[-184,-216,7],[-192,-208,7],[-200,-200,7],[-208,-192,2],[-216,-184,2],[-224,-176,2],[-232,-168,2],[-240,-160,2],[-248,-152,7],[-256,-144,7],[-264,-136,7],[-272,-128,7],[-280,-120,7],[-288,-112,2],[-296,-104,2],[-304,-96,2],[-312,-88,2],[-320,-80,2],[-328,-72,7],[-336,-64,7],[-344,-56,7],[-352,-48,7],[-360,-40,7],[-368,-32,2],[-376,-24,2],[-384,-16,2],[-392,-8,2],[-400,0,2]]},{"p":29,"name":"Pentagon","pts":[[0,400,0],[40,370,7],[80,340,7],[120,310,7],[160,278,7],[200,248,7],[240,218,7],[280,188,7],[320,156,7],[360,126,7],[400,94,7],[386,48,2],[372,2,2],[358,-40,2],[344,-84,2],[330,-134,2],[316,-174,2],[302,-224,2],[288,-270,2],[274,-314,2],[260,-360,2],[248,-400,2],[204,-400,4],[160,-400,4],[116,-400,4],[72,-400,4],[28,-400,4],[-28,-400,4],[-72,-400,4],[-116,-400,4],[-160,-400,4],[-204,-400,4],[-248,-400,4],[-260,-360,5],[-274,-314,5],[-288,-270,5],[-302,-224,5],[-316,-174,5],[-330,-134,5],[-344,-84,5],[-358,-40,5],[-372,2,5],[-372,2,5],[-386,48,5],[-400,94,5],[-360,126,6],[-320,156,6],[-280,188,6],[-240,218,6],[-200,248,6],[-160,278,6],[-120,310,6],[-80,340,6],[-40,370,6],[0,400,6]]},{"p":30,"name":"Octagon","pts":[[0,398,0],[-96,358,1],[-191,318,1],[-283,283,1],[-318,191,2],[-358,96,2],[-398,0,2],[-358,-96,3],[-318,-191,3],[-283,-283,3],[-191,-318,4],[-96,-358,4],[0,-398,4],[96,-358,5],[191,-318,5],[283,-283,5],[318,-191,6],[358,-96,6],[398,0,6],[358,96,7],[318,191,7],[283,283,7],[191,318,4],[96,358,4],[0,398,4]]},{"p":34,"name":"Star","pts":[[0,398,0],[0,398,1],[-96,96,1],[-96,96,1],[-398,96,2],[-398,96,2],[-151,-96,2],[-151,-96,2],[-247,-398,4],[-247,-398,4],[0,-211,4],[0,-211,4],[247,-398,6],[247,-398,6],[151,-96,6],[151,-96,6],[398,96,7],[398,96,7],[96,96,7],[96,96,7],[0,398,1],[0,398,1]]},{"p":37,"name":"8-point star","pts":[[-70,169,0],[0,417,1],[69,170,1],[292,296,4],[165,71,4],[414,3,2],[164,-65,2],[293,-290,5],[68,-162,5],[0,-410,3],[-69,-163,3],[-294,-289,6],[-166,-64,6],[-416,3,7],[-166,71,7],[-293,296,5],[-70,169,5]]},{"p":39,"name":"Rays","pts":[[0,418,0],[0,-1,7],[1,-418,4],[295,-296,0],[0,-1,2],[-295,295,3],[-419,-1,0],[-1,-1,5],[417,-2,1],[295,294,0],[0,-1,6],[-296,-297,7]]},{"p":25,"name":"Five rays","pts":[[0,0,0],[405,132,2],[0,0,0],[0,425,4],[0,0,0],[-405,132,6],[0,0,0],[-250,-344,5],[0,0,0],[241,-344,7]]},{"p":45,"name":"Hourglass","pts":[[0,40,0],[-360,400,7],[360,400,7],[0,40,7],[0,40,7],[0,-40,0],[-360,-400,6],[360,-400,6],[0,-40,6],[0,-40,6]]},{"p":46,"name":"Four squares","pts":[[-185,185,0],[-185,296,4],[-296,296,4],[-296,185,4],[-185,185,4],[-185,-185,0],[-185,-296,5],[-296,-296,5],[-296,-185,5],[-185,-185,5],[185,-185,0],[185,-296,6],[296,-296,6],[296,-185,6],[185,-185,6],[185,185,0],[185,296,7],[296,296,7],[296,185,7],[185,185,7]]},{"p":47,"name":"Row of squares","pts":[[-375,15,0],[-345,15,7],[-345,-15,7],[-375,-15,7],[-375,15,7],[-285,15,0],[-255,15,7],[-255,-15,7],[-285,-15,7],[-285,15,7],[-195,15,0],[-165,15,2],[-165,-15,2],[-195,-15,2],[-195,15,2],[-105,15,0],[-75,15,2],[-75,-15,2],[-105,-15,2],[-105,15,2],[-15,15,0],[15,15,7],[15,-15,7],[-15,-15,7],[-15,15,7],[75,15,0],[105,15,4],[105,-15,4],[75,-15,4],[75,15,4],[165,15,0],[195,15,4],[195,-15,4],[165,-15,4],[165,15,4],[255,15,0],[285,15,6],[285,-15,6],[255,-15,6],[255,15,6],[345,15,0],[375,15,6],[375,-15,6],[345,-15,6],[345,15,6]]}];
+const toLaserIdx = c => ({ [C.red]: 1, [C.green]: 2, [C.blue]: 3, [C.yellow]: 4, [C.cyan]: 5, [C.pink]: 6, [C.white]: 7 })[c] || 7;
+function heartPts(col) {
+  const pts = [];
+  for (let k = 0; k <= 96; k++) {
+    const t = 2 * Math.PI * k / 96, x = 16 * Math.sin(t) ** 3, y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+    if (k === 0) pts.push([x * 18, y * 18, 0, 1]);
+    pts.push([x * 18, y * 18, col, k === 96 ? 1 : 0]);
+  }
+  return pts;
+}
+const STATIC_DRAWN = [
+  { name: "Circle", make: col => rings(1, [col]) },
+  { name: "Double ring", make: col => rings(2, [col, col]) },
+  { name: "Heart", make: col => heartPts(col) },
+];
+function shapeSVG(pts) {
+  let d = "", pen = false;
+  for (const [x, y, c] of pts) {
+    const X = (x / 800 * 44 + 25).toFixed(1), Y = (25 - y / 800 * 44).toFixed(1);
+    if (c > 0 && pen) d += `L${X} ${Y}`; else d += `M${X} ${Y}`;
+    pen = true;
+  }
+  return `<svg viewBox="0 0 50 50" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+function staticColour() { return live.color ?? C.white; }
+async function sendStatic(item) {
+  if (!tx || !settings) return status("Connect first.", true);
+  stopChase(); active = null; blackedOut = false; aimActive = false; render();
+  const col = staticColour();
+  const sc = { ...baseScene(), size: 255, color: col, group: G.line, graph: 4 * (item.p || 0), hmove: 0, vmove: 0, rot: 0, hflip: 0, vflip: 0, wave: 0, flow: 0 };
+  if (item.make) sc.draw = item.make(toLaserIdx(col));
+  drawingScene = { ...sc, staticItem: item }; lastScene = drawingScene;
+  try {
+    await prepDraw();                                         // Program mode + replace any stored playlist
+    await write(sc.draw ? drawFrameCfg(sc.draw, sc) : sceneFrame(sc));
+    [...$("shapes").children].forEach(b => b.classList.toggle("on", b.dataset.name === item.name));
+    status(item.name + " (still). Drag Aim to move it; colour buttons recolour it.");
+  } catch (e) { status(e.message, true); }
+}
+function buildShapes() {
+  const box = $("shapes"); box.innerHTML = "";
+  const all = [...STATIC_PATTERNS.map(s => ({ ...s })), ...STATIC_DRAWN.map(s => ({ ...s, pts: s.make(7).map(([x, y, c]) => [x, y, c]) }))];
+  for (const item of all) {
+    const b = document.createElement("button");
+    b.className = "shape"; b.dataset.name = item.name; b.title = item.name; b.setAttribute("aria-label", item.name);
+    b.innerHTML = shapeSVG(item.pts) + "<span></span>";
+    b.querySelector("span").textContent = item.name;
+    b.onclick = () => sendStatic(item);
+    box.appendChild(b);
+  }
+}
+$("openStatic").onclick = () => { $("staticModal").hidden = false; if (!$("shapes").children.length) buildShapes(); };
+const closeStatic = () => { $("staticModal").hidden = true; };
+$("closeStatic").onclick = closeStatic;
+$("staticModal").addEventListener("click", e => { if (e.target === $("staticModal")) closeStatic(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("staticModal").hidden) closeStatic(); });
+function recolourStatic() {
+  if (!drawingScene || !drawingScene.staticItem) return;
+  const it = drawingScene.staticItem, col = staticColour();
+  drawingScene = { ...drawingScene, color: col }; if (it.make) drawingScene.draw = it.make(toLaserIdx(col));
+  lastScene = drawingScene; queueScene({ ...drawingScene });
 }
 
 // ---------- ANIMATIONS: built-in animal / moving-figure animations (verified: dolphins, puma, snake, bats...) ----------
@@ -1160,7 +1340,7 @@ async function startAnimations() {
     animTick++;
     const mine = loadMine();
     if (mine.length && animTick % 4 === 0) {            // your saved drawings join the rotation for ~10 s
-      await prepDraw(); await write(drawFrame(strokesToPoints(pick(mine).strokes)));
+      await prepDraw(); const pts = strokesToPoints(pick(mine).strokes); await write(drawFrameCfg(pts, { ...baseScene(), size: 255 }));
     } else await writeSure(animFrameBuiltIn());
   }, 12000);
 }
@@ -1176,7 +1356,7 @@ async function prepDraw() {
 function refreshShow() {
   if (blackedOut || !settings) return;
   if (micShow()) return resendMic();
-  if (chase === "party") return write(partyPlaylist()).catch(() => {});
+  if (chase === "party") return partyResend();
   if (chase === "anim") return writeSure(animFrameBuiltIn()).catch(() => {});
   if (!chase && active && !SHOWS[active].chase) return startShow(active);
 }
@@ -1191,7 +1371,7 @@ COLORS.forEach(([c, bg, name]) => {
   b.onclick = () => {
     const lc = { 1: C.red, 2: C.green, 3: C.blue, 4: C.yellow, 5: C.cyan, 6: C.pink, 7: C.white, 8: null, 9: C.rainbow }[c];
     const same = live.color === lc && live.c0 === c;
-    live.color = same ? null : lc; live.c0 = same ? null : c; refreshShow();
+    live.color = same ? null : lc; live.c0 = same ? null : c; refreshShow(); recolourStatic();
     [...$("colors").children].forEach(x => x.classList.toggle("on", x === b && live.c0 !== null));
     status(live.c0 === null ? "Colors back to the show" : "Color locked: " + name + " (tap again to release)");
   };
@@ -1229,7 +1409,7 @@ $("connect").onclick = () => connect(false);
 $("connectAll").onclick = () => connect(true);
 $("pauseBtn").onclick = async () => {
   if (!tx) return status("Connect first, or use the laser's power switch.", true);
-  stopChase(); active = null; aimActive = false; motion.x = motion.y = motion.spin = null; blackedOut = true; render();
+  stopChase(); active = null; aimActive = false; drawingScene = null; motion.x = motion.y = motion.spin = null; blackedOut = true; render();
   const off = new Uint8Array(settings); off[0] = 0; off[8] = 0;          // DMX mode, no DMX signal -> output off
   try { await writeSure(settingsFrame(off)); status("Lasers off. Tap any show to turn them back on."); }
   catch (e) { status(e.message, true); }
