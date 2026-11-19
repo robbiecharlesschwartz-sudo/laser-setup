@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
 <title>Laser Console</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -141,21 +143,8 @@
     </div>
   </div>
 
-  <div class="card" id="tempo">
-    <h2><span class="n">02</span>Tempo<span class="hint" id="bpmVal"></span></h2>
-    <input type="range" id="bpm" min="90" max="180" step="1" value="128" aria-label="Tempo">
-    <div class="seg" style="grid-template-columns:1fr 2fr 1fr;margin-bottom:8px">
-      <button id="bpmDown" aria-label="Tempo down">−</button>
-      <button id="tapBtn">Tap tempo</button>
-      <button id="bpmUp" aria-label="Tempo up">+</button>
-    </div>
-    <button id="micBtn">Sync to the music with the phone mic: OFF</button>
-    <div style="height:3px;background:var(--line2);border-radius:2px;margin-top:10px;overflow:hidden"><div id="micMeter" style="height:100%;width:0;background:var(--accent);transition:width .08s"></div></div>
-    <p class="note" style="margin-top:12px">Mic sync follows the kick drum. Shows A, B, E, F, G are driven by this page — keep it open with the screen on.</p>
-  </div>
-
   <div class="card" id="deck">
-    <h2><span class="n">03</span>Aim<span class="hint">Drag to point the show</span></h2>
+    <h2><span class="n">02</span>Aim<span class="hint">Drag to point the show</span></h2>
     <canvas id="joy" width="600" height="600" aria-label="Aim joystick: left/right and up/down"></canvas>
     <div class="seg" style="margin-top:10px">
       <button id="springBtn" class="on">Spring to center</button>
@@ -173,7 +162,7 @@
   </div>
 
   <div class="card">
-    <h2><span class="n">04</span>Fine-tune<span class="hint">Applies on release</span></h2>
+    <h2><span class="n">03</span>Fine-tune<span class="hint">Applies on release</span></h2>
     <label><span>Speed</span><span id="speedVal">–</span></label>
     <input type="range" id="speed" min="0" max="100" step="1" aria-label="Speed">
     <label><span>Sound sensitivity</span><span id="sensVal">–</span></label>
@@ -191,7 +180,9 @@
         <li>After a power-off the laser returns to its back-panel mode. Tap a show again.</li>
         <li>Not listed? Turn phone Bluetooth on, power-cycle the laser, try again.</li>
         <li><b>Rave</b> and <b>Rave + Anim</b> run on the lasers' own microphone: they need the music loud near the lasers (phone speakers are too quiet). Sensitivity is in Fine-tune.</li>
-        <li><b>Aim</b> moves everything in Club / Party / Animations; in Rave, Lines and Classic it can shift the show one way only (hardware limit).</li>
+        <li><b>Aim</b> and <b>Spin</b> work in every show: in Club they steer the running show; in the others they take over with an aimable beam while you hold, then hand the show back.</li>
+        <li><b>Blackout</b> switches the lasers to standby (fully off). Tap any show to turn them back on.</li>
+        <li><b>Party Set</b> is a smooth sequence the lasers play by themselves; it changes every minute.</li>
         <li>Mount the lasers above head height. Never aim beams at people.</li>
       </ol>
     </details>
@@ -256,13 +247,19 @@ if (!navigator.bluetooth) { $("nosupport").hidden = false; $("connect").disabled
 // ---- Transport: ONE serialized queue for every write (Web Bluetooth rejects overlapping GATT writes,
 // which silently dropped button presses while a show was streaming). No-ack writes (acked ones are very slow).
 let txChain = Promise.resolve(), txBusy = 0;
+// Paced: real lasers drop pieces that arrive back-to-back (long frames then arrive corrupted and are ignored).
+const pause = ms => new Promise(r => setTimeout(r, ms));
 async function rawWrite(h) {
   const b = bytes(h);
   for (let i = 0; i < b.length; i += 20) {
     const part = b.slice(i, i + 20);
     if (tx.writeValueWithoutResponse) await tx.writeValueWithoutResponse(part); else await tx.writeValueWithResponse(part);
+    if (b.length > 20) await pause(12);
   }
 }
+// Settings / mode frames are idempotent: send twice so one dropped piece can't lose a button press.
+function writeSure(h) { return write(h).then(() => pause(80)).then(() => write(h)); }
+function settingsFrame(s) { return "C0C1C2C3" + hex(s) + "C4C5C6C7"; }
 function write(h) {
   if (!tx) return Promise.reject(new Error("Not connected"));
   txBusy++;
@@ -318,7 +315,7 @@ function render() {
 // One change at a time; buttons lock while sending.
 async function apply(change, msg) {          // instant: change local settings, send once, no slow read-back
   if (!settings) return status("Connect first.", true);
-  try { change(); await write("C0C1C2C3" + hex(settings) + "C4C5C6C7"); status(msg); }
+  try { change(); await writeSure(settingsFrame(settings)); status(msg); }
   catch (e) { status(e.message, true); }
   render();
 }
@@ -436,6 +433,11 @@ $("closeDraw").onclick = () => $("drawModal").hidden = true;
 // Upload: trace edges of a bold image into simplified strokes.
 function rdp(p, eps) {
   if (p.length < 3) return p;
+  if (Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]) < 1e-6) {   // closed outline: split at farthest point
+    let far = 1, fd = -1;
+    for (let i = 1; i < p.length - 1; i++) { const dd = Math.hypot(p[i][0] - p[0][0], p[i][1] - p[0][1]); if (dd > fd) { fd = dd; far = i; } }
+    return rdp(p.slice(0, far + 1), eps).slice(0, -1).concat(rdp(p.slice(far), eps));
+  }
   const a = p[0], b = p[p.length - 1], dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
   let idx = 0, dm = 0;
   for (let i = 1; i < p.length - 1; i++) { const d = Math.abs(dy * p[i][0] - dx * p[i][1] + b[0] * a[1] - b[1] * a[0]) / L; if (d > dm) { dm = d; idx = i; } }
@@ -446,11 +448,19 @@ function traceImage(img) {
   const x = c.getContext("2d", { willReadFrequently: true }), sc = Math.min(N / img.width, N / img.height) * 0.9;
   x.drawImage(img, (N - img.width * sc) / 2, (N - img.height * sc) / 2, img.width * sc, img.height * sc);
   const d = x.getImageData(0, 0, N, N).data, at = (i, j) => (j * N + i) * 4;
-  let alpha = false; for (let k = 3; k < d.length; k += 4) if (d[k] < 200) { alpha = true; break; }
-  const bg = [0, 1, 2].map(ch => (d[at(0,0)+ch] + d[at(N-1,0)+ch] + d[at(0,N-1)+ch] + d[at(N-1,N-1)+ch]) / 4);
+  // Foreground: transparency if the image has it, otherwise an automatic (Otsu) brightness threshold,
+  // with "foreground" = the side that differs from the border (works for dark-on-light and light-on-dark).
+  let alpha = 0; for (let k = 3; k < d.length; k += 4) if (d[k] < 200) alpha++;
+  const lum = new Float32Array(N * N), hist = new Array(256).fill(0);
+  for (let q = 0; q < N * N; q++) { const p = q * 4, a = d[p + 3] / 255; const L = (0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2]) * a + 255 * (1 - a); lum[q] = L; hist[Math.min(255, L | 0)]++; }
+  let sum = 0; for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let wB = 0, sB = 0, best = 0, thr = 128;
+  for (let t = 0; t < 256; t++) { wB += hist[t]; if (!wB) continue; const wF = N * N - wB; if (!wF) break; sB += t * hist[t];
+    const mB = sB / wB, mF = (sum - sB) / wF, v = wB * wF * (mB - mF) ** 2; if (v > best) { best = v; thr = t; } }
+  let border = 0, bn = 0; for (let i = 0; i < N; i++) { border += lum[i] + lum[(N - 1) * N + i] + lum[i * N] + lum[i * N + N - 1]; bn += 4; }
+  const bgDark = border / bn <= thr;                       // Otsu: class 1 = lum <= thr, class 2 = lum > thr
   const fg = new Uint8Array(N * N);
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const p = at(i, j);
-    fg[j*N+i] = alpha ? d[p+3] > 128 : (Math.abs(d[p]-bg[0]) + Math.abs(d[p+1]-bg[1]) + Math.abs(d[p+2]-bg[2]) > 120); }
+  for (let q = 0; q < N * N; q++) fg[q] = alpha > N * N * .02 ? d[q * 4 + 3] > 128 : (bgDark ? lum[q] > thr : lum[q] <= thr);
   const edge = new Uint8Array(N * N);
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) if (fg[j*N+i] &&
     (i==0||j==0||i==N-1||j==N-1||!fg[j*N+i-1]||!fg[j*N+i+1]||!fg[(j-1)*N+i]||!fg[(j+1)*N+i])) edge[j*N+i] = 1;
@@ -474,14 +484,22 @@ $("uploadBtn").onclick = () => $("fileIn").click();
 $("fileIn").onchange = e => {
   const f = e.target.files[0]; if (!f) return;
   const im = new Image();
-  im.onload = () => { strokes = traceImage(im); redraw(); status(strokes.length ? "Image traced. Pick a pen color first to recolor, then upload again." : "Couldn't find shapes in that image. Try a bold logo.", !strokes.length); };
+  if (!/^image\//.test(f.type) || f.size > 25e6) { status("Please choose an image file (under 25 MB).", true); e.target.value = ""; return; }
+  im.onload = () => {
+    try { strokes = traceImage(im); } catch { strokes = []; }
+    URL.revokeObjectURL(im.src); redraw();
+    const n = strokesToPoints(strokes).length;
+    status(strokes.length ? `Image traced into ${strokes.length} line${strokes.length > 1 ? "s" : ""} (${n} points). Tap "Send to laser" to cast it.` : "Couldn't find clear shapes in that image. Try a bold logo or icon.", !strokes.length);
+  };
+  im.onerror = () => status("Couldn't read that image.", true);
   im.src = URL.createObjectURL(f); e.target.value = "";
 };
 $("sendDraw").onclick = async () => {
   if (!tx) return status("Connect to the laser first.", true);
   if (!strokes.length) return;
   stopChase(); active = null; render();
-  try { await write(drawFrame(strokesToPoints(strokes))); status("Your drawing is on the laser. Tap a show to go back."); }
+  blackedOut = false;
+  try { await prepDraw(); await write(drawFrame(strokesToPoints(strokes))); status("Your drawing is on the lasers. Tap a show to go back."); }
   catch (e) { status(e.message, true); }
 };
 // Saved drawings (this phone only) join the ANIMATIONS show.
@@ -491,7 +509,7 @@ function renderMine() {
   const box = $("mine"); box.innerHTML = "";
   loadMine().forEach((m, i) => {
     const b = document.createElement("button");
-    b.innerHTML = '<img alt=""><span class="x" aria-label="Delete">×</span>'; b.querySelector("img").src = m.thumb;
+    b.innerHTML = '<img alt=""><span class="x" aria-label="Delete">×</span>'; if (/^data:image\/(jpeg|png);base64,/.test(m.thumb || "")) b.querySelector("img").src = m.thumb;
     b.onclick = ev => {
       if (ev.target.classList.contains("x")) { const l = loadMine(); l.splice(i, 1); storeMine(l); renderMine(); return; }
       strokes = m.strokes; redraw();
@@ -668,9 +686,26 @@ function aimGlobal(x, y) {
     aimBusy = false;
   })();
 }
+// Aim uses the VERIFIED Program-mode positions (vertical 32 up / 96 down, horizontal 12 left / 116 right).
+// The global "position" command was tested and moves nothing, so it is not used.
+let aimActive = false, aimReturn = null;
+function engineShow() { return chase === "club"; }
+function takeover() {                      // non-engine show: pause it and show an aimable beam scene
+  if (engineShow() || aimActive) return;
+  aimActive = true; aimReturn = blackedOut ? null : active;
+  stopChase(); blackedOut = false;
+  const pal = PALETTES[show.pal] || PALETTES.ice;
+  lastScene = { ...baseScene(), graph: 4 * 25, color: live.color ?? pal.cols[0], size: 255 };
+}
+function releaseTakeover() {
+  if (!aimActive) return;
+  aimActive = false;
+  if (aimReturn) startShow(aimReturn); else { pending = null; }
+}
 function onJoy() {
-  if (chase && !micShow()) { if (!pending && !chase) ensureMotionScene(); }   // Program shows: the sender applies the offset
-  else aimGlobal(motion.x ?? 0, motion.y ?? 0);          // built-in + lasers'-mic shows: shift the whole output
+  if (!settings || blackedOut && !aimActive && !joyDown) return;
+  takeover();
+  queueScene({ ...(lastScene || baseScene()) });          // the sender applies the joystick position to this scene
 }
 function ensureMotionScene() {
   if (!chase) { const sc = lastScene ? { ...lastScene } : baseScene(); const t = performance.now();
@@ -691,7 +726,7 @@ const joyUp = () => {
   joyDown = false;
   if (motion.spring) {
     motion.x = 0; motion.y = 0; onJoy();                       // aim back to centre...
-    if (motion.auto) setTimeout(() => { if (!joyDown) { motion.x = null; motion.y = null; drawJoy(); if (!chase || micShow()) aimGlobal(0, 0); } }, 400);  // ...then the show owns motion again
+    if (motion.auto) setTimeout(() => { if (!joyDown) { motion.x = null; motion.y = null; drawJoy(); if (motion.spin === null) releaseTakeover(); } }, 400);  // ...then the show takes over again
   }
   drawJoy();
 };
@@ -705,25 +740,28 @@ $("autoBtn").onclick = () => {
 $("spin").oninput = e => {
   let v = +e.target.value; if (Math.abs(v) < 6) v = 0;                 // centre detent
   motion.spin = v / 100; $("spinVal").textContent = v > 0 ? v + "% CW" : v < 0 ? -v + "% CCW" : "0";
-  if (tx) ensureMotionScene();
+  if (tx && settings) { takeover(); queueScene({ ...(lastScene || baseScene()) }); }
 };
-$("spin").onchange = () => { if (motion.auto) { motion.spin = null; $("spin").value = 0; $("spinVal").textContent = "0"; if (tx) ensureMotionScene(); } };
+$("spin").onchange = () => { if (motion.auto) { motion.spin = null; $("spin").value = 0; $("spinVal").textContent = "0"; if (motion.x === null) releaseTakeover(); } };
 $("burst").onclick = () => {
   if (!tx) return status("Connect first.", true);
   live.burstDir = pick([-1, 1]); live.burstUntil = performance.now() + 1500;
-  if (micShow()) { const sc = baseScene(); sc.graph = 4 * 39; sc.color = C.white; sc.rot = live.burstDir > 0 ? 191 : 255; sc.hmove = 230; sc.vmove = 200;
-    sendScene(sc); setTimeout(resendMic, 1500); }
-  else if (!chase) { ensureMotionScene(); setTimeout(ensureMotionScene, 1550); }
+  if (!engineShow()) accent({ graph: 4 * 39, color: C.white, rot: live.burstDir > 0 ? 191 : 255, hmove: 230, vmove: 200 }, 1500);
   status("Spin burst");
 };
 $("flip180").onclick = () => {
   if (!tx) return status("Connect first.", true);
   live.flipUntil = performance.now() + 900;
-  if (micShow()) { const sc = baseScene(); sc.graph = 4 * 25; sc.color = C.cyan; sc.hflip = 255; sc.vflip = 200;
-    sendScene(sc); setTimeout(resendMic, 900); }
-  else if (!chase) { ensureMotionScene(); setTimeout(ensureMotionScene, 950); }
+  if (!engineShow()) accent({ graph: 4 * 25, color: C.cyan, hflip: 255, vflip: 200 }, 900);
   status("Flip");
 };
+function accent(extra, ms) {               // short Program-mode accent, then the previous show resumes
+  if (!settings) return;
+  const back = blackedOut ? null : active;
+  stopChase(); blackedOut = false;
+  sendScene({ ...baseScene(), size: 255, ...extra });
+  setTimeout(() => { if (back && !chase && !aimActive) startShow(back); }, ms);
+}
 drawJoy();
 
 // ---- Natural song sections: drop / build / breakdown, chosen at random like a real set ----
@@ -815,7 +853,7 @@ const EXP_FOR = {
 };
 function expansionNow() {
   if (!show.exp) return 1;
-  const beatMs = (mic ? beatGap : 60000 / +$("bpm").value);
+  const beatMs = 60000 / BPM;
   const sinceBeat = mic ? (performance.now() - lastBeatAt) : ((performance.now() - show.expT0) % beatMs);
   const b = (performance.now() - show.expT0) / beatMs, ph = Math.min(1, sinceBeat / beatMs);
   let v = EXP[show.exp](b, ph);
@@ -823,7 +861,7 @@ function expansionNow() {
   return Math.max(.12, Math.min(1, v));
 }
 // 10 Hz expansion refresh between beats (looks + motion stay as chosen on the beat).
-setInterval(() => { if (chase && show.form && tx && !txBusy && !micShow()) queueScene(buildScene()); }, 100);
+setInterval(() => { if (chase === "club" && show.form && tx && !txBusy) queueScene(buildScene()); }, 100);   // only the motion-engine show streams
 
 // --- Show state
 const show = {
@@ -958,7 +996,7 @@ const MIC_SETS = {
 };
 const MIC_COLORS = [8, 9, 1, 3, 5, 6, 2, 7];      // C0 colour codes: jump, RGB, red, blue, cyan, magenta, green, white
 let micSet = "beams", micColor = 8;
-function micShow() { return chase === "rave" || chase === "mix" || (chase === "party" && show.sec.name === "drop"); }
+function micShow() { return chase === "rave" || chase === "mix"; }
 function micFrame() {
   const set = MIC_SETS[micSet], s = new Uint8Array(settings), save = settings;
   settings = s; s[0] = set.group; pickPatterns(set.group, pickN(set.pick, 10));
@@ -1032,114 +1070,128 @@ function blackout() {      // anticipation before a drop (not a stop): blank fra
 }
 
 function animStep(t) { chaseStep(); }   // ANIMATIONS uses the same engine with animation-weighted formations
-// ---------- Phone mic beat detection ----------
-// Low-band energy vs. its running average; a kick = jump above 1.35x average (min 280 ms apart).
-let mic = null, lastBeatAt = 0, beatGap = 470, micLevel = 100;
-async function startMic() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-  const ctx = new (window.AudioContext || window.webkitAudioContext)();
-  const src = ctx.createMediaStreamSource(stream), an = ctx.createAnalyser();
-  an.fftSize = 1024; an.smoothingTimeConstant = 0.2; src.connect(an);
-  const buf = new Uint8Array(an.frequencyBinCount), hi = Math.max(2, Math.round(150 / (ctx.sampleRate / an.fftSize)));
-  let avg = 0;
-  mic = { stream, ctx, timer: setInterval(() => {
-    an.getByteFrequencyData(buf);
-    let e = 0; for (let i = 1; i <= hi; i++) e += buf[i]; e /= hi;
-    avg = avg ? avg * 0.95 + e * 0.05 : e; micLevel = avg;
-    live.level = live.level * .7 + Math.min(1, e / 160) * .3;
-    const lvl = Math.round(live.level * 100); const m = $("micMeter"); if (m) m.style.width = lvl + "%";
-    const now = performance.now();
-    const sens = live.sens ?? .7;
-    if (e > avg * (1.6 - .5 * sens) && e > 70 - 40 * sens && now - lastBeatAt > 280) {
-      const gap = now - lastBeatAt; if (gap < 1000) beatGap = beatGap * 0.7 + gap * 0.3;
-      lastBeatAt = now;
-      if (chase) { chaseStep(); setTimeout(() => chase && chaseStep(), beatGap / 2); }
-      $("bpmVal").textContent = Math.round(60000 / beatGap) + " (from mic)";
-    }
-  }, 15) };
-}
-function stopMic() {
-  if (!mic) return;
-  clearInterval(mic.timer); mic.stream.getTracks().forEach(t => t.stop()); mic.ctx.close(); mic = null;
-}
-function micUI() {
-  $("micBtn").textContent = "Sync to the music with the phone mic: " + (mic ? "ON" : "OFF");
-  $("micBtn").classList.toggle("primary", !!mic);
-}
-async function ensureMic() {
-  if (mic) return;
-  try { await startMic(); }
-  catch (e) { status("RAVE is running on the tempo clock (microphone not allowed).", true); }
-  micUI();
-}
-$("micBtn").onclick = async () => {
-  try {
-    if (mic) { stopMic(); if (chase) startChase(chase); }
-    else { await startMic(); }
-  } catch (e) { status("Couldn't use the microphone: " + e.message, true); }
-  $("micBtn").textContent = "Sync to the music with the phone mic: " + (mic ? "ON" : "OFF");
-  $("micBtn").classList.toggle("primary", !!mic);
-};
-
+// Fixed house tempo for the motion engine's phrasing (the tempo controls were removed: they changed nothing visible).
+const BPM = 128;
+let mic = null, lastBeatAt = 0, beatGap = 60000 / BPM, micLevel = 100;   // phone-mic sync removed (lasers' own mic drives RAVE)
 function startChase(name) {
   stopChase();
   chase = name; step = 0; lastSection = "";
-  const ms = 60000 / +$("bpm").value / 2;              // half-beat ticks
-  chaseTimer = setInterval(() => { if (mic && performance.now() - lastBeatAt < 1500) return; chaseStep(); }, ms);  // clock only when no beats heard
+  const ms = 60000 / BPM / 2;                          // half-beat ticks (fixed house tempo)
+  chaseTimer = setInterval(chaseStep, ms);
   try { navigator.wakeLock && navigator.wakeLock.request("screen").then(l => wakeLock = l).catch(() => {}); } catch {}
 }
 let chaseTimer = null;
 function stopChase() {
   inProgram = false; pending = null; lastScene = null; look = null; move = null;
+  if (partyTimer) clearInterval(partyTimer); if (animTimer) clearInterval(animTimer); partyTimer = animTimer = null;
   if (chaseTimer) clearInterval(chaseTimer);
   chaseTimer = null; chase = null;
   try { wakeLock && wakeLock.release(); } catch {} wakeLock = null;
 }
-// Tempo: changes only the beat clock's speed; the show keeps its place (no restart).
-function setTempo(v) {
-  v = Math.max(90, Math.min(180, Math.round(v)));
-  $("bpm").value = v; $("bpmVal").textContent = v + " BPM";
-  if (chaseTimer) { clearInterval(chaseTimer); chaseTimer = setInterval(() => { if (mic && performance.now() - lastBeatAt < 1500) return; chaseStep(); }, 60000 / v / 2); }
-}
-$("bpm").oninput = e => setTempo(+e.target.value);
-$("bpmDown").onclick = () => setTempo(+$("bpm").value - 1);
-$("bpmUp").onclick = () => setTempo(+$("bpm").value + 1);
-let taps = [];
-$("tapBtn").onclick = () => {
-  const t = performance.now();
-  taps = taps.filter(x => t - x < 3000); taps.push(t);
-  if (taps.length >= 3) { const gaps = taps.slice(1).map((x, i) => x - taps[i]); setTempo(60000 / (gaps.reduce((a, b) => a + b, 0) / gaps.length)); }
-  else $("bpmVal").textContent = "tap " + (4 - taps.length) + " more…";
-};
-$("bpmVal").textContent = $("bpm").value + " BPM";
 
-document.querySelectorAll(".show").forEach(b => b.onclick = async () => {
-  const s = SHOWS[b.dataset.show];
+
+// ===================== SHOW CONTROL =====================
+// What each show runs on (all verified on the lasers):
+//  RAVE, RAVE+ANIM  -> built-in modes + SOUND: the lasers' own mic drives them; page curates sets per phrase.
+//  CLUB             -> Program-mode motion engine (page streams scenes / drawn rings).
+//  PARTY            -> a scene PLAYLIST the lasers play by themselves (smooth, no streaming); refreshed each minute.
+//  ANIMATIONS       -> built-in Animation mode (animals & moving figures); page rotates the set.
+//  LINES / CLASSIC  -> built-in Line / Random modes with SOUND.
+let blackedOut = false;
+async function startShow(name) {
+  const s = SHOWS[name]; if (!s || !settings) return;
+  blackedOut = false; aimActive = false;
   stopChase();
-  await apply(() => {
-    settings[0] = s.group;
-    if (s.pick) pickPatterns(s.group, s.pick);
-    settings[8] = s.sound ? 255 : 0;
-    settings[2] = s.color;
-    settings[5] = s.speed;
-    if (s.sound && settings[9] < 128) settings[9] = 160;
-    active = b.dataset.show;
-  }, s.label + " is playing." + (s.chase ? " Keep this page open." : ""));
-  if (s.chase && active === b.dataset.show && settings) startChase(s.chase);
-  if (s.chase) micFresh = true;
-});
+  active = name; render();
+  if (name === "party") { chase = "party"; await startParty(); }
+  else if (name === "anim") { chase = "anim"; await startAnimations(); }
+  else {
+    settings[0] = s.group; if (s.pick) pickPatterns(s.group, s.pick);
+    settings[8] = s.sound ? 255 : 0; settings[2] = live.c0 ?? s.color;
+    settings[5] = Math.round(s.speed * Math.min(1, live.speed)); settings[9] = live.sensByte ?? (s.sound ? 230 : settings[9]);
+    if (!s.chase) { try { await writeSure(settingsFrame(settings)); } catch (e) { return status(e.message, true); } }
+    if (s.chase) { startChase(s.chase); micFresh = true; }
+  }
+  status(s.label + " is playing." + (s.chase || name === "party" || name === "anim" ? " Keep this page open." : ""));
+  render();
+}
+document.querySelectorAll(".show").forEach(b => b.onclick = () => startShow(b.dataset.show));
+
+// ---------- PARTY: laser-run playlist (verified: lasers cycle a D0 playlist on their own timer; follower copies) ----------
+const PARTY_FORMS = ["sky", "wideFan", "fan", "rotFan", "sheet", "cross", "wave", "roll", "xform", "fan", "sky"];
+let partyTimer = null;
+function partyScene(formName, pal, i) {
+  const f = F[formName], k = v => v ? 128 + Math.round(Math.min(1, (.35 + .4 * v) * Math.min(1, live.speed)) * 127) : 0;
+  const color = live.color ?? (pal.split && i % 2 ? C.seg2 : pal.cols[i % pal.cols.length]);
+  const rot = f.m.rot ? (i % 2 ? 128 : 192) + Math.round(.5 * Math.min(1, live.speed) * 63) : 0;
+  const c = [4 * pick(f.pats), G.line, color, f.flow ?? 40, 255, 0, rot, k(f.m.hflip), k(f.m.vflip), k(f.m.h), k(f.m.v) || (f.vpos ? posByte(f.vpos) : 0), f.wave || 0, 0];
+  const secs = pick([4, 5, 6, 8]);
+  return (c.map(v => v.toString(16).padStart(2, "0")).join("") + (secs * 10).toString(16).padStart(2, "0")).padEnd(30, "0");
+}
+function partyPlaylist() {
+  const pals = Object.keys(PALETTES), scenes = [];
+  for (let i = 0; i < 12; i++) {
+    const pal = PALETTES[pals[Math.floor(i / 4 + Math.random() * pals.length) % pals.length]];
+    scenes.push(partyScene(PARTY_FORMS[(i + Math.floor(Math.random() * 3)) % PARTY_FORMS.length], pal, i));
+  }
+  return ("D0D1D2D3" + (0x80 | scenes.length).toString(16).padStart(2, "0") + "00" + scenes.map(x => x + "FF").join("") + "D4D5D6D7").toUpperCase();
+}
+async function startParty() {
+  const p = new Uint8Array(settings); p[0] = 7; p[8] = 0;
+  await writeSure(settingsFrame(p)); inProgram = true;
+  await write(partyPlaylist());
+  partyTimer = setInterval(() => { if (chase === "party") write(partyPlaylist()).catch(() => {}); }, 60000);
+}
+
+// ---------- ANIMATIONS: built-in animal / moving-figure animations (verified: dolphins, puma, snake, bats...) ----------
+const ANIMALS = [2, 5, 7, 8, 11, 12, 13, 14, 16, 17, 18, 21, 25, 28, 41, 42, 46, 47, 48, 54, 62, 64];
+let animTimer = null, animTick = 0;
+function animFrameBuiltIn() {
+  const s = new Uint8Array(settings), save = settings; settings = s;
+  s[0] = 3; pickPatterns(3, animTick % 3 === 0 ? ANIMALS : pickN(ANIMALS, 8));
+  s[2] = live.c0 ?? 9; s[5] = Math.round(200 * Math.min(1.25, live.speed)); s[8] = 0;
+  settings = save; return settingsFrame(s);
+}
+async function startAnimations() {
+  animTick = 0; inProgram = false;
+  await writeSure(animFrameBuiltIn());
+  animTimer = setInterval(async () => {
+    if (chase !== "anim") return;
+    animTick++;
+    const mine = loadMine();
+    if (mine.length && animTick % 4 === 0) {            // your saved drawings join the rotation for ~10 s
+      await prepDraw(); await write(drawFrame(strokesToPoints(pick(mine).strokes)));
+    } else await writeSure(animFrameBuiltIn());
+  }, 12000);
+}
+
+// Drawings only show in Program mode with no stored playlist running (verified): enter Program + one plain scene first.
+async function prepDraw() {
+  const p = new Uint8Array(settings); p[0] = 7; p[8] = 0;
+  await writeSure(settingsFrame(p)); inProgram = true;
+  await write(sceneFrame({ ...baseScene(), size: 0, color: C.white }));
+}
+
+// ---------- re-apply fine-tune to whatever is playing ----------
+function refreshShow() {
+  if (blackedOut || !settings) return;
+  if (micShow()) return resendMic();
+  if (chase === "party") return write(partyPlaylist()).catch(() => {});
+  if (chase === "anim") return writeSure(animFrameBuiltIn()).catch(() => {});
+  if (!chase && active && !SHOWS[active].chase) return startShow(active);
+}
+
 $("speed").oninput = e => $("speedVal").textContent = e.target.value + "%";
-$("speed").onchange = e => chase ? (live.speed = +e.target.value / 100, resendMic(), status("Show speed " + e.target.value + "%")) : apply(() => settings[5] = raw(+e.target.value), "Speed set to " + e.target.value + "%.");
+$("speed").onchange = e => { live.speed = Math.max(.05, +e.target.value / 100); refreshShow(); status("Speed " + e.target.value + "%"); };
 $("sens").oninput = e => $("sensVal").textContent = e.target.value + "%";
-$("sens").onchange = e => chase ? (live.sens = +e.target.value / 100, live.sensByte = raw(+e.target.value), resendMic(), status("Sound sensitivity " + e.target.value + "%")) : apply(() => settings[9] = raw(+e.target.value), "Sensitivity set to " + e.target.value + "%.");
+$("sens").onchange = e => { live.sensByte = raw(+e.target.value); refreshShow(); status("Sound sensitivity " + e.target.value + "% (Rave, Rave + Anim, Lines, Classic)"); };
 COLORS.forEach(([c, bg, name]) => {
   const b = document.createElement("button");
   b.dataset.c = c; b.title = name; b.setAttribute("aria-label", name); b.style.background = bg;
   b.onclick = () => {
-    if (!chase) return apply(() => settings[2] = c, "Color: " + name + ".");
     const lc = { 1: C.red, 2: C.green, 3: C.blue, 4: C.yellow, 5: C.cyan, 6: C.pink, 7: C.white, 8: null, 9: C.rainbow }[c];
     const same = live.color === lc && live.c0 === c;
-    live.color = same ? null : lc; live.c0 = same ? null : c; resendMic();
+    live.color = same ? null : lc; live.c0 = same ? null : c; refreshShow();
     [...$("colors").children].forEach(x => x.classList.toggle("on", x === b && live.c0 !== null));
     status(live.c0 === null ? "Colors back to the show" : "Color locked: " + name + " (tap again to release)");
   };
@@ -1159,11 +1211,13 @@ async function connect(showAll) {
     catch { dev.gatt.disconnect(); throw new Error("That device isn't a laser. Try again and pick TD5322A…"); }
     tx = await svc.getCharacteristic(TX);
     const rx = await svc.getCharacteristic(RX);
-    rx.addEventListener("characteristicvaluechanged", e => rxHex += hex(e.target.value.buffer));
+    rx.addEventListener("characteristicvaluechanged", e => { rxHex = (rxHex + hex(e.target.value.buffer)).slice(-4096); });
     await rx.startNotifications();
-    dev.addEventListener("gattserverdisconnected", () => { settings = null; active = null; busy = false; render(); status("Disconnected. Tap Connect to reconnect."); });
+    dev.addEventListener("gattserverdisconnected", () => { stopChase(); tx = null; settings = null; active = null; busy = false; aimActive = false; render(); status("Disconnected. Tap Connect to reconnect."); });
     status("Reading the laser…");
-    settings = await readSettings();
+    // Security: only drive a device that answers the LightElf settings query with a valid 96-byte block.
+    try { settings = await readSettings(); if (!settings || settings.length !== 96) throw 0; }
+    catch { tx = null; settings = null; try { dev.gatt.disconnect(); } catch {} throw new Error("That device didn't answer like a LightElf laser, so nothing was sent to it. Pick TD5322A…"); }
     active = guessActive();
     status(active ? SHOWS[active].label + " is playing." : "Connected. Tap a show.");
   } catch (e) {
@@ -1175,8 +1229,9 @@ $("connect").onclick = () => connect(false);
 $("connectAll").onclick = () => connect(true);
 $("pauseBtn").onclick = async () => {
   if (!tx) return status("Connect first, or use the laser's power switch.", true);
-  stopChase(); active = null; render();
-  try { await write("F0F1F2F3" + "00".repeat(16) + "0001" + "0000000001" + "F4F5F6F7"); status("Paused: lights off. Tap any show to start again."); }
+  stopChase(); active = null; aimActive = false; motion.x = motion.y = motion.spin = null; blackedOut = true; render();
+  const off = new Uint8Array(settings); off[0] = 0; off[8] = 0;          // DMX mode, no DMX signal -> output off
+  try { await writeSure(settingsFrame(off)); status("Lasers off. Tap any show to turn them back on."); }
   catch (e) { status(e.message, true); }
 };
 $("disconnect").onclick = () => dev && dev.gatt.connected && dev.gatt.disconnect();
