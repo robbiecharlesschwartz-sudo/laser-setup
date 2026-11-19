@@ -748,7 +748,7 @@ function easeMotion(rate) {
   for (const k of ["h", "v", "hflip", "vflip", "rot"]) show.m[k] += (show.tgt[k] - show.m[k]) * rate;
 }
 const spd = k => Math.abs(k) < .03 ? 0 : 128 + Math.round(Math.min(1, Math.abs(k)) * 127);
-const rotB = k => Math.abs(k) < .03 ? 0 : (k > 0 ? 128 : 192) + Math.round(Math.min(1, Math.abs(k)) * 63);
+const rotB = k => Math.abs(k) < .08 ? 0 : (k > 0 ? 128 : 192) + Math.round(Math.min(1, Math.abs(k)) * 63);
 
 // SAFETY: automated shows only park the vertical position at centre or above (never aimed downward).
 function buildScene() {
@@ -785,7 +785,8 @@ function chaseStep() {
     for (const k of ["h", "v", "hflip"]) if (show.tgt[k]) show.tgt[k] = Math.min(1, Math.max(show.tgt[k], ramp));
     if (chase !== "club" && show.sec.left === 1 && inBar >= 6) { if (inBar === 6) blackout(); return; }
   }
-  easeMotion(S === "drop" ? .7 : S === "build" ? .45 : .25);
+  // Breakdowns settle quickly at first (contrast after a drop), then glide.
+  easeMotion(S === "drop" ? .7 : S === "build" ? .45 : (show.sec.total - show.sec.left < 1 ? .5 : .25));
 
   // Micro-events: accents on beats / snares, never a full reset.
   if (beat) {
