@@ -24,7 +24,8 @@
   .show span { display:block; font-size:13px; color:var(--dim); margin-top:4px; }
   .show.active { border-color:var(--accent); background:rgba(60,240,160,.08); }
   .show.active::after { content:"PLAYING"; position:absolute; top:10px; right:12px; font-size:10px; font-weight:700; color:var(--accent); letter-spacing:.08em; }
-  .show.busy { opacity:.6; }
+  .show.wide { grid-column:1 / -1; min-height:80px; }
+  .note { color:var(--dim); font-size:13px; margin:0; }
   label { display:flex; justify-content:space-between; color:var(--dim); font-size:14px; margin:4px 0 8px; }
   input[type=range] { width:100%; accent-color:var(--accent); margin:0 0 16px; height:28px; }
   .colors { display:grid; grid-template-columns:repeat(9,1fr); gap:6px; }
@@ -65,6 +66,12 @@
       <button class="show" data-show="club"><b>CLUB</b><span>Fast multi-beams, no sound needed</span></button>
       <button class="show" data-show="lines"><b>LINES</b><span>Straight laser lines on the beat</span></button>
       <button class="show" data-show="classic"><b>CLASSIC</b><span>Every built-in pattern on the beat</span></button>
+      <button class="show wide" data-show="anim"><b>ANIMATIONS</b><span>The laser's own animations: chicken, plane, rocket, jet, bat, horse, eagle, dolphin, lion and more, mixed with beam bursts</span></button>
+    </div>
+    <div id="tempo" hidden>
+      <label style="margin-top:14px"><span>Tempo (BPM)</span><span id="bpmVal"></span></label>
+      <input type="range" id="bpm" min="90" max="180" step="1" value="128">
+      <p class="note">RAVE, CLUB and ANIMATIONS are driven by this page: keep it open with the screen on. Tapping LINES or CLASSIC stops the chase.</p>
     </div>
   </div>
 
@@ -106,11 +113,13 @@ const RAVE_BEAMS  = [...Array(64).keys()].map(i => i + 1).filter(n => ![11,19,24
 const MULTI_BEAMS = [7,8,9,10,12,13,17,20,21,23,25,31,33,34,35,36,37,46,47,48,49,50,51,56,59,60,61,62,63,64];
 const LINE_BEAMS  = [1,3,4,5,8,10,20,21,24,25,28,34,36,39,41,42,43,44,45,46,48,49,52,56,60];
 
+function ANIMS_ALL() { return [14, 25]; }
 const SHOWS = {
-  rave:    { label: "RAVE",    group: 6, pick: RAVE_BEAMS,  sound: true,  color: 8, speed: 220 },
-  club:    { label: "CLUB",    group: 6, pick: MULTI_BEAMS, sound: false, color: 8, speed: 255 },
-  lines:   { label: "LINES",   group: 2, pick: LINE_BEAMS,  sound: true,  color: 9, speed: 220 },
-  classic: { label: "CLASSIC", group: 1, pick: null,        sound: true,  color: 9, speed: 200 },
+  rave:    { label: "RAVE",    group: 6, pick: RAVE_BEAMS,  sound: true,  color: 8, speed: 255, chase: "rave" },
+  club:    { label: "CLUB",    group: 6, pick: MULTI_BEAMS, sound: false, color: 8, speed: 255, chase: "club" },
+  lines:   { label: "LINES",   group: 2, pick: LINE_BEAMS,  sound: true,  color: 9, speed: 255 },
+  classic: { label: "CLASSIC", group: 1, pick: null,        sound: true,  color: 9, speed: 220 },
+  anim:    { label: "ANIMATIONS", group: 3, pick: ANIMS_ALL(), sound: false, color: 9, speed: 255, chase: "anim" },
 };
 
 let dev, tx, rxHex = "", settings = null, active = null, busy = false;
@@ -146,6 +155,7 @@ function guessActive() {
   if (settings[0] === 6) return settings[8] === 255 ? "rave" : "club";
   if (settings[0] === 2) return "lines";
   if (settings[0] === 1) return "classic";
+  if (settings[0] === 3) return "anim";
   return null;
 }
 
@@ -182,9 +192,84 @@ async function apply(change, msg) {
   busy = false; render();
 }
 
-document.querySelectorAll(".show").forEach(b => b.onclick = () => {
+// ---------- Beat chase engine ----------
+// Like a DMX chaser (QLC+) / party-parrot: the page pushes a new look on every beat,
+// with quick bursts every 8 beats. Laser speed is maxed; the page sets the pace.
+const RAVE_COLORS = [8, 1, 7, 3, 5, 6, 2, 4];
+const CLUB_COLORS = [1, 3, 7, 6, 5, 4, 2, 9];
+let chase = null, step = 0, sending = false, wakeLock = null;
+
+async function fastWrite(h) {          // no-ack writes: quick enough to change looks on every beat
+  const b = bytes(h);
+  for (let i = 0; i < b.length; i += 20) {
+    const part = b.slice(i, i + 20);
+    if (tx.writeValueWithoutResponse) await tx.writeValueWithoutResponse(part); else await tx.writeValueWithResponse(part);
+  }
+}
+function beamFrame(list, color, sound) {
+  const s = new Uint8Array(settings);
+  const save = settings; settings = s;
+  settings[0] = 6; pickPatterns(6, list); settings[2] = color; settings[5] = 255; settings[8] = sound ? 255 : 0;
+  settings = save;
+  return "C0C1C2C3" + hex(s) + "C4C5C6C7";
+}
+// Built-in Animation group (3): laser's own drawings.
+const SKY_ANIMS = [14, 25];                                   // chicken, plane
+const ANIMS = [14, 25, 64, 54, 28, 18, 41, 13, 12, 11, 16, 17, 46, 2, 21, 8, 7, 5, 62, 32, 49, 3, 31, 6, 45, 47, 48, 40, 29, 30];
+function animFrame(n, color) {
+  const s = new Uint8Array(settings), save = settings; settings = s;
+  settings[0] = 3; pickPatterns(3, [n]); settings[2] = color === 8 ? 9 : color; settings[5] = 255; settings[8] = 0;
+  settings = save;
+  return "C0C1C2C3" + hex(s) + "C4C5C6C7";
+}
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const pickN = (a, n) => [...a].sort(() => Math.random() - .5).slice(0, n);
+
+function chaseStep() {
+  const beat = step++;
+  const bar = Math.floor(beat / 2) % 16;                 // ticks are half-beats
+  let frame = null;
+  if (chase === "rave") {
+    // Every half beat: new beam set + color; last 2 beats of every 8: rapid single-pattern burst.
+    const burst = bar % 8 >= 6;
+    frame = beamFrame(burst ? [pick(MULTI_BEAMS)] : pickN(RAVE_BEAMS, 6), RAVE_COLORS[beat % RAVE_COLORS.length], true);
+  } else if (chase === "club") {
+    // On the beat: one multi-beam look + color. Bars 7-8: half-beat bursts.
+    const burst = bar % 8 >= 6;
+    if (burst || beat % 2 === 0) frame = beamFrame([pick(MULTI_BEAMS)], CLUB_COLORS[Math.floor(beat / (burst ? 1 : 2)) % CLUB_COLORS.length], false);
+  } else if (chase === "anim") {
+    const list = ANIMS;
+    // 4 beats of one animation, next animation, ... every 4th one is followed by 2 beats of beam bursts.
+    const cycle = Math.floor(beat / 8), pos = beat % 8;
+    if (cycle % 4 === 3) { if (pos % 2 === 0) frame = beamFrame([pick(MULTI_BEAMS)], CLUB_COLORS[beat % CLUB_COLORS.length], false); }
+    else if (pos === 0) frame = animFrame(list[(cycle - Math.floor(cycle / 4)) % list.length], CLUB_COLORS[cycle % CLUB_COLORS.length]);
+  }
+  if (!frame || sending || !tx) return;
+  sending = true;
+  fastWrite(frame).catch(() => {}).finally(() => sending = false);
+}
+function startChase(name) {
+  stopChase();
+  chase = name; step = 0;
+  const ms = 60000 / +$("bpm").value / 2;              // half-beat ticks
+  chaseTimer = setInterval(chaseStep, ms);
+  $("tempo").hidden = false;
+  try { navigator.wakeLock && navigator.wakeLock.request("screen").then(l => wakeLock = l).catch(() => {}); } catch {}
+}
+let chaseTimer = null;
+function stopChase() {
+  if (chaseTimer) clearInterval(chaseTimer);
+  chaseTimer = null; chase = null;
+  $("tempo").hidden = true;
+  try { wakeLock && wakeLock.release(); } catch {} wakeLock = null;
+}
+$("bpm").oninput = e => { $("bpmVal").textContent = e.target.value; if (chase) startChase(chase); };
+$("bpmVal").textContent = $("bpm").value;
+
+document.querySelectorAll(".show").forEach(b => b.onclick = async () => {
   const s = SHOWS[b.dataset.show];
-  apply(() => {
+  stopChase();
+  await apply(() => {
     settings[0] = s.group;
     if (s.pick) pickPatterns(s.group, s.pick);
     settings[8] = s.sound ? 255 : 0;
@@ -192,7 +277,8 @@ document.querySelectorAll(".show").forEach(b => b.onclick = () => {
     settings[5] = s.speed;
     if (s.sound && settings[9] < 128) settings[9] = 160;
     active = b.dataset.show;
-  }, s.label + " is playing.");
+  }, s.label + " is playing." + (s.chase ? " Keep this page open." : ""));
+  if (s.chase && active === b.dataset.show && settings) startChase(s.chase);
 });
 $("speed").oninput = e => $("speedVal").textContent = e.target.value + "%";
 $("speed").onchange = e => apply(() => settings[5] = raw(+e.target.value), "Speed set to " + e.target.value + "%.");
