@@ -130,6 +130,7 @@
   <div class="card" id="connectCard">
     <button class="primary" id="connect">Connect lead laser</button>
     <button class="link" id="connectAll">Not listed? Show all Bluetooth devices</button>
+    <button id="connect2" hidden>Connect second laser</button>
     <div id="status">Power the lead laser and close LightElf.</div>
   </div>
 
@@ -269,7 +270,10 @@ if (!navigator.bluetooth) { $("nosupport").hidden = false; $("connect").disabled
 
 // ---- Transport: ONE serialized queue for every write (Web Bluetooth rejects overlapping GATT writes,
 // which silently dropped button presses while a show was streaming). No-ack writes (acked ones are very slow).
-let txChain = Promise.resolve(), txBusy = 0;
+// Several lasers at once: each machine has its own Bluetooth address, so the page can hold both and
+// send every command to each (own queue per laser). `tx` stays truthy while at least one is connected.
+const lasers = [];
+Object.defineProperty(window, "txBusy", { get: () => lasers.reduce((a, l) => a + l.busy, 0) });
 // Paced: real lasers drop pieces that arrive back-to-back (long frames then arrive corrupted and are ignored).
 const pause = ms => new Promise(r => setTimeout(r, ms));
 // Connection log (Setup notes -> Connection log): every frame sent, and any failure, for real-hardware debugging.
@@ -281,38 +285,43 @@ function logLine(msg) {
   const el = document.getElementById("connLog"); if (el && el.offsetParent) el.textContent = LOG.slice().reverse().join("\n");
 }
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("write timed out")), ms))]);
-async function rawWrite(h) {
-  const b = bytes(h), kind = FRAME_NAMES[h.slice(0, 4)] || "frame";
+async function rawWrite(h, L) {
+  const b = bytes(h), kind = FRAME_NAMES[h.slice(0, 4)] || "frame", ch = L.tx;
   try {
     for (let i = 0; i < b.length; i += 20) {
       const part = b.slice(i, i + 20);
       // A write that never completes must not freeze the queue (that silently stalled every later button).
-      await withTimeout(tx.writeValueWithoutResponse ? tx.writeValueWithoutResponse(part) : tx.writeValueWithResponse(part), 1500);
+      await withTimeout(ch.writeValueWithoutResponse ? ch.writeValueWithoutResponse(part) : ch.writeValueWithResponse(part), 1500);
       if (b.length > 20) await pause(12);
     }
     const extra = kind === "settings" ? ` mode ${b[4]} colour ${b[6]} speed ${b[9]} sound ${b[12]}` : kind === "scene" ? ` pattern ${b[6] / 4} size ${b[10]} sweep ${b[15]}/${b[16]} spin ${b[12]}` : "";
-    logLine(`sent ${kind} (${b.length} B)${extra}`);
-  } catch (e) { logLine(`FAILED ${kind}: ${e.message}`); throw e; }
+    logLine(`L${lasers.indexOf(L) + 1} sent ${kind} (${b.length} B)${extra}`);
+  } catch (e) { logLine(`L${lasers.indexOf(L) + 1} FAILED ${kind}: ${e.message}`); throw e; }
 }
 // Settings / mode frames are idempotent: send twice so one dropped piece can't lose a button press.
 function writeSure(h) { return write(h).then(() => pause(80)).then(() => write(h)); }
 function settingsFrame(s) { return "C0C1C2C3" + hex(s) + "C4C5C6C7"; }
-function write(h) {
-  if (!tx) return Promise.reject(new Error("Not connected"));
-  txBusy++;
-  const p = txChain.then(() => rawWrite(h)).finally(() => { txBusy--; });
-  txChain = p.catch(() => {});
+function writeTo(L, h) {
+  L.busy++;
+  const p = L.chain.then(() => rawWrite(h, L)).finally(() => { L.busy--; });
+  L.chain = p.catch(() => {});
   return p;
 }
-async function readSettings(tries = 2) {
-  rxHex = "";
-  await write("E0E1E2E3" + hex(crypto.getRandomValues(new Uint8Array(4))) + "E4E5E6E7");
+function write(h) {                         // every connected laser gets the same command
+  if (!lasers.length) return Promise.reject(new Error("Not connected"));
+  return Promise.allSettled(lasers.map(L => writeTo(L, h))).then(r => {
+    if (r.every(x => x.status === "rejected")) throw r[0].reason;
+  });
+}
+async function readSettings(tries = 2, L = lasers[0]) {
+  L.rx = "";
+  await writeTo(L, "E0E1E2E3" + hex(crypto.getRandomValues(new Uint8Array(4))) + "E4E5E6E7");
   for (let i = 0; i < 50; i++) {
     await new Promise(r => setTimeout(r, 100));
-    const m = /C0C1C2C3(.+?)C4C5C6C7/.exec(rxHex);
-    if (m && rxHex.includes("E4E5E6E7")) return bytes(m[1]);
+    const m = /C0C1C2C3(.+?)C4C5C6C7/.exec(L.rx);
+    if (m && L.rx.includes("E4E5E6E7")) return bytes(m[1]);
   }
-  if (tries > 1) return readSettings(tries - 1);
+  if (tries > 1) return readSettings(tries - 1, L);
   throw new Error("The laser didn't answer. Switch it off and on, then connect again.");
 }
 function pickPatterns(group, list) {
@@ -331,8 +340,9 @@ function guessActive() {
 }
 
 function render() {
-  const connected = !!(dev && dev.gatt.connected && settings);
-  $("pill").textContent = connected ? "Live" : "Offline";
+  const connected = !!(lasers.length && settings);
+  $("pill").textContent = connected ? (lasers.length > 1 ? "Live · 2 lasers" : "Live") : "Offline";
+  $("connect2").hidden = !(connected && lasers.length === 1);
   $("pill").classList.toggle("on", connected);
   $("connect").hidden = connected; $("connectAll").hidden = connected; $("disconnect").hidden = !connected;
   document.querySelectorAll(".show").forEach(b => {
@@ -1433,33 +1443,48 @@ COLORS.forEach(([c, bg, name]) => {
 });
 
 async function connect(showAll) {
+  const adding = lasers.length > 0;
+  let d = null, L = null;
   try {
-    $("connect").disabled = true;
-    status(showAll ? "Pick TD5322A… (or an unnamed device) in the list." : "Pick the laser (TD5322A…) in the list.");
-    dev = await navigator.bluetooth.requestDevice(showAll
+    $("connect").disabled = true; $("connect2").disabled = true;
+    status(adding ? "Pick the OTHER TD5322A… in the list (the one not already connected)." : showAll ? "Pick TD5322A… (or an unnamed device) in the list." : "Pick the laser (TD5322A…) in the list.");
+    d = await navigator.bluetooth.requestDevice(showAll
       ? { acceptAllDevices: true, optionalServices: [SVC] }
       : { filters: [{ namePrefix: "TD53" }, { namePrefix: "ELF" }, { services: [SVC] }], optionalServices: [SVC] });
+    if (lasers.some(x => x.dev.id === d.id)) throw new Error("That laser is already connected. Pick the other TD5322A…");
     status("Connecting…");
     let svc;
-    try { svc = await (await dev.gatt.connect()).getPrimaryService(SVC); }
-    catch { dev.gatt.disconnect(); throw new Error("That device isn't a laser. Try again and pick TD5322A…"); }
-    tx = await svc.getCharacteristic(TX);
+    try { svc = await (await d.gatt.connect()).getPrimaryService(SVC); }
+    catch { d.gatt.disconnect(); throw new Error("That device isn't a laser. Try again and pick TD5322A…"); }
+    L = { dev: d, tx: await svc.getCharacteristic(TX), chain: Promise.resolve(), busy: 0, rx: "" };
     const rx = await svc.getCharacteristic(RX);
-    rx.addEventListener("characteristicvaluechanged", e => { rxHex = (rxHex + hex(e.target.value.buffer)).slice(-4096); });
+    rx.addEventListener("characteristicvaluechanged", e => { L.rx = (L.rx + hex(e.target.value.buffer)).slice(-4096); });
     await rx.startNotifications();
-    dev.addEventListener("gattserverdisconnected", () => { stopChase(); tx = null; settings = null; active = null; busy = false; aimActive = false; render(); status("Disconnected. Tap Connect to reconnect."); });
+    lasers.push(L); tx = lasers[0].tx; dev = lasers[0].dev;
     status("Reading the laser…");
     // Security: only drive a device that answers the LightElf settings query with a valid 96-byte block.
-    try { settings = await readSettings(); if (!settings || settings.length !== 96) throw 0; }
-    catch { tx = null; settings = null; try { dev.gatt.disconnect(); } catch {} throw new Error("That device didn't answer like a LightElf laser, so nothing was sent to it. Pick TD5322A…"); }
-    active = guessActive();
-    status(active ? SHOWS[active].label + " is playing." : "Connected. Tap a show.");
+    let s2;
+    try { s2 = await readSettings(2, L); if (!s2 || s2.length !== 96) throw 0; }
+    catch { lasers.splice(lasers.indexOf(L), 1); tx = lasers[0]?.tx || null; try { d.gatt.disconnect(); } catch {} throw new Error("That device didn't answer like a LightElf laser, so nothing was sent to it. Pick TD5322A…"); }
+    d.addEventListener("gattserverdisconnected", () => {
+      const i = lasers.indexOf(L); if (i >= 0) lasers.splice(i, 1);
+      tx = lasers[0]?.tx || null; dev = lasers[0]?.dev || null;
+      if (!lasers.length) { stopChase(); settings = null; active = null; busy = false; aimActive = false; status("Disconnected. Tap Connect to reconnect."); }
+      else status("One laser disconnected; still controlling the other.");
+      render();
+    });
+    if (!adding) { settings = s2; active = guessActive(); status(active ? SHOWS[active].label + " is playing." : "Connected. Tap a show, or connect the second laser."); }
+    else {
+      status("Both lasers connected: everything now goes to both.");
+      if (active) startShow(active); else if (drawingScene) queueScene({ ...drawingScene });
+    }
   } catch (e) {
     status(e.name === "NotFoundError" ? "No laser picked. Close LightElf, switch the laser off and on, try again." : e.message, true);
   }
-  $("connect").disabled = false; render();
+  $("connect").disabled = false; $("connect2").disabled = false; render();
 }
 $("connect").onclick = () => connect(false);
+$("connect2").onclick = () => connect(false);
 $("connectAll").onclick = () => connect(true);
 $("pauseBtn").onclick = async () => {
   if (!tx) return status("Connect first, or use the laser's power switch.", true);
@@ -1468,7 +1493,7 @@ $("pauseBtn").onclick = async () => {
   try { await writeSure(settingsFrame(off)); status("Lasers off. Tap any show to turn them back on."); }
   catch (e) { status(e.message, true); }
 };
-$("disconnect").onclick = () => dev && dev.gatt.connected && dev.gatt.disconnect();
+$("disconnect").onclick = () => [...lasers].forEach(L => { try { L.dev.gatt.disconnect(); } catch {} });
 render();
 </script>
 </body>
