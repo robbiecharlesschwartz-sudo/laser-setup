@@ -925,7 +925,7 @@ const F = {
   xform:    { label: "X formation",     groups: [G.line], pats: [23, 39],     dens: 3, m: { h: .9, v: .9, hflip: .7 } },
   tunnel:   { label: "Tunnel",          drawn: 2, dens: 2, m: { rot: .55, v: .25 } },
   tunnelX:  { label: "Tunnel burst",    drawn: 3, dens: 3, m: { rot: .95, h: .5, v: .5 } },
-  circle:   { label: "Circle",          drawn: 1, dens: 1, m: { h: .45, v: .35 } },
+  circle:   { label: "Circle",          drawn: 1, dens: 1, m: { h: .5, v: .45, rot: .35 } },   // always moving
   rays:     { label: "Ray array",       groups: [G.line], pats: [12, 17],     dens: 2, m: { h: .6, v: .3 } },
   raysDense:{ label: "Dense rays",      groups: [G.line], pats: [17, 12, 39], dens: 3, m: { h: .85, v: .7, rot: .4 } },
   wave:     { label: "Figure-8 wave",   groups: [G.line], pats: [0, 6],       dens: 1, m: { h: .35, v: .55 }, wave: 110 },
@@ -986,7 +986,7 @@ function expansionNow() {
   return Math.max(chase === "club" ? .5 : .12, Math.min(1, v));
 }
 // 10 Hz expansion refresh between beats (looks + motion stay as chosen on the beat).
-setInterval(() => { if (chase === "club" && show.form && tx && !txBusy) queueScene(buildScene()); }, 100);   // only the motion-engine show streams
+setInterval(() => { if (chase === "club" && show.form && tx && !txBusy && !(audio.on && audio.silent)) queueScene(buildScene()); }, 100);   // only the motion-engine show streams
 
 // --- Show state
 const show = {
@@ -1081,7 +1081,7 @@ function buildScene() {
   if (L.has("split") && !pal.split) sc.color = show.colIdx % 2 ? C.seg2 : sc.color;
   if (L.has("flow")) sc.flow = 127;
   const wv = chase !== "club" ? 1 : audio.on
-    ? .45 + .9 * audio.mid                                                    // music: mids drive the motion speed
+    ? .45 + .9 * audio.mid + Math.max(0, (audio.rising || 0) * 6)           // music: mids drive speed, builds push it up
     : .45 + .75 * speedWave();                                                // no music input: irregular speed waves
   sc.hmove = spd(Math.min(1, show.m.h * wv)) || 0;
   sc.vmove = spd(Math.min(1, show.m.v * wv)) || (f.vpos ? posByte(Math.max(0, f.vpos)) : 0);
@@ -1131,10 +1131,12 @@ function layerShuffle(S) {
 // Verified: the lasers' OWN microphone drives the built-in pattern modes with SOUND on (stomps/loud music
 // trigger it), but NOT Program mode. So RAVE / Rave+Anim / Party drops run in built-in modes on the lasers' mic,
 // and the page only curates which patterns, group and colour play (one write per phrase).
+const NO_CIRCLES = (list, circles) => list.filter(n => !circles.some(c => Math.abs(n - c) <= 1));
+const OUTDOOR_CIRCLES = [11, 19, 24, 29, 32, 40, 57, 58];            // rings / squares / triangle in the Outdoor table
 const MIC_SETS = {
-  beams: { label: "Laser beams", group: 2, pick: LINE_BEAMS },
-  dense: { label: "Dense rays",  group: 6, pick: MULTI_BEAMS },
-  fans:  { label: "Fans & dots", group: 6, pick: RAVE_BEAMS },
+  beams: { label: "Laser beams", group: 6, pick: NO_CIRCLES([5, 7, 8, 9, 13, 21, 34, 35, 36, 46, 49, 50, 60, 61, 64], OUTDOOR_CIRCLES) },
+  dense: { label: "Dense rays",  group: 6, pick: NO_CIRCLES(MULTI_BEAMS, OUTDOOR_CIRCLES) },
+  fans:  { label: "Fans & dots", group: 6, pick: NO_CIRCLES(RAVE_BEAMS, OUTDOOR_CIRCLES) },
   anim:  { label: "Animations",  group: 3, pick: ANIMS },
 };
 const MIC_COLORS = [8, 9, 1, 3, 5, 6, 2, 7];      // C0 colour codes: jump, RGB, red, blue, cyan, magenta, green, white
@@ -1149,6 +1151,7 @@ function micFrame() {
 }
 function micStep(t, inBar, bar) {
   const every = show.sec.name === "drop" ? 2 : 4;
+  if (audio.on && audio.silent) return;
   if (audio.on && audio.drop) { audio.drop = false; micFresh = true; }
   if (t === 0 || micFresh || (inBar === 0 && bar % every === 0)) {
     micFresh = false;
@@ -1166,6 +1169,7 @@ function sendScene(sc) {                      // one-off Program scene (motion a
 }
 
 function chaseStep() {
+  if (audio.on && audio.silent) return;                 // lights follow the music: nothing while it's quiet
   const t = step++;                                   // half-beat ticks; 8 per bar
   const beat = t % 2 === 0, inBar = t % 8, bar = Math.floor(t / 8);
   if (t === 0) { show.partyIdx = 0; show.history = []; show.sec = { name: chase === "club" ? "breakdown" : "build", left: 4, total: 4 };
@@ -1178,7 +1182,10 @@ function chaseStep() {
 
   // Phrases: formations evolve on phrase boundaries, not every beat.
   const phraseBars = chase === "club" ? (S === "drop" ? 4 : 8) : S === "drop" ? pick([1, 2]) : 2;
-  if (audio.on && chase === "club") { if (performance.now() - (show.formAt || 0) > audio.lookSecs * 1000) { newFormation(false); show.formAt = performance.now(); } }
+  if (audio.on && chase === "club") {
+    if (audio.drop) { audio.drop = false; newFormation(true); show.formAt = performance.now(); audio.pulseAt = performance.now(); }   // drop: new look now
+    else if (performance.now() - (show.formAt || 0) > audio.lookSecs * 1000) { newFormation(false); show.formAt = performance.now(); }
+  }
   else if (inBar === 0 && bar > 0 && bar % phraseBars === 0 && show.sec.left !== show.sec.total) newFormation(false);
 
   // Build: speeds keep rising inside the phrase; last half bar goes dark for anticipation.
@@ -1224,7 +1231,7 @@ const BPM = 128;
 // (bass 20-200 Hz, mids 200-2000 Hz, highs 2000-8000 Hz) each normalised against its own recent peak,
 // beats from bass onsets; bass -> pulse/size, mids -> motion speed, highs over a flash threshold -> flashes,
 // beats -> colour/pattern steps, looks rotate on a timer.
-const audio = { on: false, low: 0, mid: 0, high: 0, beats: 0, flashThr: .85, lookSecs: 16, pulseAt: 0, flashUntil: 0,
+const audio = { on: false, low: 0, mid: 0, high: 0, beats: 0, flashThr: .85, lookSecs: 16, pulseAt: 0, flashUntil: 0, silent: false,
                 shortLow: 0, longLow: 0, drop: false, lastDropAt: 0 };
 let mic = null, lastBeatAt = 0, beatGap = 60000 / BPM, micLevel = 100;
 async function startListening() {
@@ -1235,29 +1242,40 @@ async function startListening() {
   const bins = new Float32Array(an.frequencyBinCount), hz = ctx.sampleRate / an.fftSize;
   const band = (a, b) => [Math.max(1, Math.round(a / hz)), Math.min(an.frequencyBinCount - 1, Math.round(b / hz))];
   const B = { low: band(20, 200), mid: band(200, 2000), high: band(2000, 8000) };
-  const peak = { low: 1e-6, mid: 1e-6, high: 1e-6 };
-  let prevLow = 0, fluxAvg = 0;
-  mic = { stream, ctx, timer: setInterval(() => analyseFrame(an, bins, B, peak), 20) };
-  function analyseFrame(an, bins, B, peak) {
+  // Per band, in dB: an adaptive noise floor (rises slowly, drops fast) and peak (jumps up, decays ~3 s).
+  const st = {}; for (const k in B) st[k] = { floor: -90, peak: -30, prev: 0 };
+  let quietSince = performance.now();
+  mic = { stream, ctx, timer: setInterval(analyseFrame, 15) };
+  function analyseFrame() {
     an.getFloatFrequencyData(bins);
-    const e = {};
+    const now = performance.now(), sens = live.sensByte != null ? live.sensByte / 255 : .7;
+    let loudest = -200;
     for (const k in B) {
       let s = 0; for (let i = B[k][0]; i <= B[k][1]; i++) s += Math.pow(10, bins[i] / 20);
-      e[k] = s / (B[k][1] - B[k][0] + 1);
-      peak[k] = Math.max(e[k], peak[k] * .997);                       // slowly forgetting peak -> 0..1 scale
-      const n = Math.min(1, e[k] / peak[k]);
-      audio[k] += (n - audio[k]) * (n > audio[k] ? .6 : .12);         // fast attack, slow release
+      const db = 20 * Math.log10(s / (B[k][1] - B[k][0] + 1) + 1e-9), S = st[k];
+      S.floor = db < S.floor ? S.floor + (db - S.floor) * .2 : S.floor + (db - S.floor) * .002;
+      S.peak = db > S.peak ? db : S.peak - .03;
+      if (S.peak < S.floor + 12) S.peak = S.floor + 12;                  // at least 12 dB of range
+      const n = Math.max(0, Math.min(1, (db - S.floor) / (S.peak - S.floor)));
+      S.jump = n - S.prev; S.prev = n;
+      audio[k] += (n - audio[k]) * (n > audio[k] ? .75 : .3);            // snappy attack, quick release
+      loudest = Math.max(loudest, db - S.floor);
     }
-    const sens = live.sensByte != null ? live.sensByte / 255 : .7;
-    const flux = Math.max(0, e.low - prevLow); prevLow = e.low; fluxAvg = fluxAvg * .95 + flux * .05;
-    const now = performance.now();
-    if (flux > fluxAvg * (2.6 - 1.4 * sens) && audio.low > .3 && now - lastBeatAt > 270) {
-      const gap = now - lastBeatAt; if (gap < 1200) beatGap = beatGap * .75 + gap * .25;
+    // Beat = sharp rise in the bass band (onset), adaptive to sensitivity, min 260 ms apart.
+    // Very sensitive: small bass rises count (scaled by Sensitivity), 230 ms min gap; tempo re-locks within ~2 beats.
+    if (st.low.jump > .2 - .14 * sens && audio.low > .38 && now - lastBeatAt > 230) {
+      const gap = now - lastBeatAt; if (gap > 230 && gap < 1300) beatGap = Math.abs(gap - beatGap) > beatGap * .15 ? beatGap * .4 + gap * .6 : beatGap * .75 + gap * .25;
       lastBeatAt = now; audio.beats++; audio.pulseAt = now; onAudioBeat();
     }
     if (audio.high * (.6 + .6 * sens) > audio.flashThr && now > audio.flashUntil + 250) audio.flashUntil = now + 120;
-    audio.shortLow = audio.shortLow * .95 + audio.low * .05; audio.longLow = audio.longLow * .996 + audio.low * .004;
-    if (audio.shortLow > audio.longLow * 1.6 && audio.longLow < .4 && now - audio.lastDropAt > 15000) { audio.drop = true; audio.lastDropAt = now; }
+    // Silence gate: everything quiet (< 8 dB over the floor) for 2 s -> silent.
+    if (loudest > 8) { quietSince = now; if (audio.silent) { audio.silent = false; onSoundBack(); } }
+    else if (!audio.silent && now - quietSince > 2000) { audio.silent = true; onSilence(); }
+    audio.shortLow = audio.shortLow * .9 + audio.low * .1; audio.longLow = audio.longLow * .992 + audio.low * .008;
+    // Drop: bass surges vs the last ~4 s; build: energy rising steadily.
+    if (audio.shortLow > audio.longLow * 1.35 && audio.longLow < .5 && now - audio.lastDropAt > 6000) { audio.drop = true; audio.lastDropAt = now; }
+    audio.energy = audio.energy * .98 + ((audio.low + audio.mid + audio.high) / 3) * .02;
+    audio.rising = audio.energy - (audio.energySlow = (audio.energySlow ?? audio.energy) * .995 + audio.energy * .005);
     micLevel = audio.low * 100;
   }
 }
@@ -1267,8 +1285,24 @@ function stopListening() {
   mic = null; audio.on = false;
 }
 function onAudioBeat() {                     // what a beat does depends on the show
+  if (audio.silent) return;
   if (chase === "club") { chaseStep(); setTimeout(() => chase === "club" && chaseStep(), beatGap / 2); }
   else if (chase === "party") partyBeat();
+  else if (micShow() && audio.beats % 4 === 0 && !txBusy) { micColor = pick(MIC_COLORS.filter(c => c !== micColor)); sendFrame(micFrame()); }   // Rave: new colour every 4 beats
+}
+// Lights follow the music: silence (2 s) -> lasers off; sound back -> the show resumes.
+function onSilence() {
+  if (!chase || !settings || blackedOut) return;
+  const off = new Uint8Array(settings); off[0] = 0; off[8] = 0;
+  pending = null; write(settingsFrame(off)).catch(() => {}); inProgram = false;
+  status((SHOWS[chase] ? SHOWS[chase].label : "") + " · paused: no sound");
+}
+function onSoundBack() {
+  if (!chase || !settings || blackedOut) return;
+  if (micShow()) { micFresh = true; sendFrame(micFrame()); }
+  else if (chase === "party") { inProgram = false; partyResend(); }
+  else if (chase === "anim") writeSure(animFrameBuiltIn()).catch(() => {});
+  status((SHOWS[chase] ? SHOWS[chase].label : "") + " · music back");
 }
 $("listenBtn").onclick = async () => {
   try {
@@ -1329,6 +1363,10 @@ async function startShow(name) {
     settings[5] = Math.round(s.speed * Math.min(1, live.speed)); settings[9] = live.sensByte ?? (s.sound ? 230 : settings[9]);
     if (!s.chase) { try { await writeSure(settingsFrame(settings)); } catch (e) { return status(e.message, true); } }
     if (s.chase) { startChase(s.chase); micFresh = true; }
+    if ((name === "rave" || name === "mix") && !audio.on) {                  // Rave follows the music: listen automatically
+      startListening().then(() => { audio.on = true; $("listenBtn").textContent = "Listen to the music (this device's mic): ON"; $("listenBtn").classList.add("primary"); })
+        .catch(() => status("Rave is using the lasers' own mic only (this device's mic isn't allowed)."));
+    }
   }
   status(s.label + " is playing." + (s.chase || name === "party" || name === "anim" ? " Keep this page open." : ""));
   render();
@@ -1414,7 +1452,7 @@ function nextPartySet() {
   status("PARTY SET · " + partySet.name);
 }
 function partyTick() {                     // every 100 ms: advance steps on time, ramp size smoothly
-  if (chase !== "party" || !partySet) return;
+  if (chase !== "party" || !partySet || (audio.on && audio.silent)) return;
   const now = performance.now(), beatMs = 60000 / BPM;
   const st = partySet.steps[partyStep];
   const dur = st.beats * (audio.on && performance.now() - lastBeatAt < 3000 ? beatGap : beatMs);
