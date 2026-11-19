@@ -66,12 +66,13 @@
       <button class="show" data-show="club"><b>CLUB</b><span>Fast multi-beams, no sound needed</span></button>
       <button class="show" data-show="lines"><b>LINES</b><span>Straight laser lines on the beat</span></button>
       <button class="show" data-show="classic"><b>CLASSIC</b><span>Every built-in pattern on the beat</span></button>
+      <button class="show wide" data-show="mix"><b>RAVE + ANIMATIONS</b><span>Animations and beams trading off, both reacting to the music</span></button>
       <button class="show wide" data-show="anim"><b>ANIMATIONS</b><span>The laser's own animations: chicken, plane, rocket, jet, bat, horse, eagle, dolphin, lion and more, mixed with beam bursts</span></button>
     </div>
     <div id="tempo" hidden>
       <label style="margin-top:14px"><span>Tempo (BPM)</span><span id="bpmVal"></span></label>
       <input type="range" id="bpm" min="90" max="180" step="1" value="128">
-      <p class="note">RAVE, CLUB and ANIMATIONS are driven by this page: keep it open with the screen on. Tapping LINES or CLASSIC stops the chase.</p>
+      <p class="note">RAVE, CLUB, RAVE + ANIMATIONS and ANIMATIONS are driven by this page: keep it open with the screen on. Tapping LINES or CLASSIC stops the chase.</p>
     </div>
   </div>
 
@@ -91,6 +92,7 @@
       <ol>
         <li>Connect to the <b>lead</b> laser (cable in DMX OUT). The other laser in slave mode copies it.</li>
         <li>Both lasers share one Bluetooth ID, so only one can connect. That's normal.</li>
+        <li><b>One laser animations, the other beams:</b> unplug the DMX cable and set the second laser to sound mode on its back panel (SA). Connect to the first laser and tap ANIMATIONS or RAVE + ANIMATIONS.</li>
         <li>After a power-off the laser goes back to its back-panel mode. Tap a show again.</li>
         <li>No laser in the list? Close LightElf, check phone Bluetooth is on, switch the laser off and on.</li>
       </ol>
@@ -119,6 +121,7 @@ const SHOWS = {
   club:    { label: "CLUB",    group: 6, pick: MULTI_BEAMS, sound: false, color: 8, speed: 255, chase: "club" },
   lines:   { label: "LINES",   group: 2, pick: LINE_BEAMS,  sound: true,  color: 9, speed: 255 },
   classic: { label: "CLASSIC", group: 1, pick: null,        sound: true,  color: 9, speed: 220 },
+  mix:     { label: "RAVE + ANIMATIONS", group: 3, pick: [25], sound: true, color: 9, speed: 255, chase: "mix" },
   anim:    { label: "ANIMATIONS", group: 3, pick: ANIMS_ALL(), sound: false, color: 9, speed: 255, chase: "anim" },
 };
 
@@ -216,9 +219,10 @@ function beamFrame(list, color, sound) {
 // Built-in Animation group (3): laser's own drawings.
 const SKY_ANIMS = [14, 25];                                   // chicken, plane
 const ANIMS = [14, 25, 64, 54, 28, 18, 41, 13, 12, 11, 16, 17, 46, 2, 21, 8, 7, 5, 62, 32, 49, 3, 31, 6, 45, 47, 48, 40, 29, 30];
-function animFrame(n, color) {
+function animFrame(n, color, sound = false) {
   const s = new Uint8Array(settings), save = settings; settings = s;
-  settings[0] = 3; pickPatterns(3, [n]); settings[2] = color === 8 ? 9 : color; settings[5] = 255; settings[8] = 0;
+  settings[0] = 3; pickPatterns(3, [n]); settings[2] = color === 8 ? 9 : color; settings[5] = 255; settings[8] = sound ? 255 : 0;
+  if (sound && settings[9] < 128) settings[9] = 160;
   settings = save;
   return "C0C1C2C3" + hex(s) + "C4C5C6C7";
 }
@@ -237,6 +241,11 @@ function chaseStep() {
     // On the beat: one multi-beam look + color. Bars 7-8: half-beat bursts.
     const burst = bar % 8 >= 6;
     if (burst || beat % 2 === 0) frame = beamFrame([pick(MULTI_BEAMS)], CLUB_COLORS[Math.floor(beat / (burst ? 1 : 2)) % CLUB_COLORS.length], false);
+  } else if (chase === "mix") {
+    // Bar = 4 beats: 2 beats animation, 2 beats beams; sound mode on throughout so both react to the music.
+    const bar = Math.floor(beat / 8), pos = beat % 8;
+    if (pos === 0) frame = animFrame(ANIMS[bar % ANIMS.length], CLUB_COLORS[bar % CLUB_COLORS.length], true);
+    else if (pos >= 4) frame = beamFrame(pickN(RAVE_BEAMS, 6), RAVE_COLORS[beat % RAVE_COLORS.length], true);
   } else if (chase === "anim") {
     const list = ANIMS;
     // 4 beats of one animation, next animation, ... every 4th one is followed by 2 beats of beam bursts.
