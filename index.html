@@ -78,8 +78,8 @@
     <button id="pauseBtn" class="primary" style="background:#ff6b6b;color:#1a0505;margin-bottom:12px">PAUSE (lights off)</button>
     <h2>Shows: tap one, it starts right away</h2>
     <div class="shows">
-      <button class="show" data-show="rave"><b>RAVE</b><span>Spins, flips, sweeps up/down + side to side, all mixed; hits on the beat</span></button>
-      <button class="show" data-show="club"><b>CLUB</b><span>Groove sweeps on the half-time, spin bursts on the snare</span></button>
+      <button class="show" data-show="rave"><b>RAVE</b><span>Builds, drops and breakdowns: tunnels, X formations, dense rays, spin reversals on the kick</span></button>
+      <button class="show" data-show="club"><b>CLUB</b><span>Hypnotic: liquid skies, wide fans, sheets; long phrases, 1–2 colours</span></button>
       <button class="show" data-show="lines"><b>LINES</b><span>Straight laser lines on the beat</span></button>
       <button class="show" data-show="classic"><b>CLASSIC</b><span>Every built-in pattern on the beat</span></button>
       <button class="show wide" data-show="party"><b>PARTY SHOW (pre-made)</b><span>Scripted set on loop: intro, build, drop, breakdown, build, drop. Set the tempo to your music.</span></button>
@@ -520,12 +520,12 @@ function liveScene() {
 }
 setInterval(async () => {
   if (sending || !tx) return;
-  const live = chase && look && move;
+  const live = false;
   if (!live && !pending) return;
   let sc = live ? liveScene() : { ...pending }; pending = null;
   // Joystick AIMS the show: it offsets whatever is playing (adds to the live motion).
   if (motion.x !== null) sc.hmove = posByte(motion.x * H_RANGE);
-  if (motion.y !== null) sc.vmove = posByte(motion.y);
+  if (motion.y !== null) sc.vmove = posByte(Math.max(-.3, motion.y));   // safety: limited downward aim
   if (live) { const key = JSON.stringify(sc); if (key === lastSentKey && now() - lastSentAt < 1500) return; lastSentKey = key; lastSentAt = now(); }
   if (motion.spin !== null) sc.rot = spinByte(motion.spin);             // laser's own spin speed
   if (motion.angle !== null) sc.rot = motion.angle;
@@ -631,104 +631,186 @@ $("flip180").onclick = () => {
 drawJoy();
 
 // ---- Natural song sections: drop / build / breakdown, chosen at random like a real set ----
-let sec = { name: "drop", left: 8, total: 8 }, spinDir = 1, axisPick = 0, holdUntilTick = 0;
+// ===================== CHOREOGRAPHY ENGINE =====================
+// Built ONLY on behaviour verified on these lasers (step-by-step tests, Nov 2026):
+//  - Scene command (Program mode) drives everything below. No-ack writes are fast; acked writes are very slow.
+//  - Built-in sweep: H/V move 128-255 = speed. Fast & big, and it KEEPS FLOWING when colour/design change.
+//  - Spin 128-191 CW / 192-255 CCW speed. 3D roll: H/V flip 128-255 speed. Flip position 32 = pattern turned face-on (wider).
+//  - Positions (0-127, circular): vertical 32 = up, 96 = down; horizontal 12 = left, 116 = right (32 = too far, edge-on).
+//  - Design groups switch live: line, arc, bright dots, dots, animations.
+//  - 2 machines x 2 heads; follower mirrors the lead over DMX.
+// Untested (used carefully / not at all): wave, zoom, size changes, blackout frame.
+
+// --- Palettes: colour has a role. LightElf codes: red 15, blue 25, pink(magenta) 35, cyan 45, green 65, white 5, 2-colour split 100.
+const PALETTES = {
+  ice:     { cols: [C.cyan, C.blue],  mood: "cool" },
+  deep:    { cols: [C.blue, C.cyan],  mood: "cool" },
+  acid:    { cols: [C.green, C.cyan], mood: "aggressive" },
+  heat:    { cols: [C.pink, C.cyan],  mood: "warm" },
+  tension: { cols: [C.red, C.pink],   mood: "tension" },
+  impact:  { cols: [C.red, C.blue],   mood: "peak", split: true },
+  neon:    { cols: [C.green, C.pink], mood: "peak", split: true },
+};
+const PAL_FOR = {
+  breakdown: ["ice", "deep", "heat"], build: ["tension", "acid", "heat"],
+  drop: ["impact", "neon", "acid", "heat", "tension"], club: ["ice", "deep", "heat", "acid"],
+};
+
+// --- Formations: the visual primitives, expressed in verified controls.
+// m = motion targets (0..1 speeds; rot sign = direction), vpos = parked vertical position (-1..1, + = up).
+const F = {
+  fan:      { label: "Fan",          groups: [G.line], dens: 2, m: { h: .55 } },
+  wideFan:  { label: "Wide fan",     groups: [G.line], dens: 1, m: { h: .35 }, faceOn: true },
+  rotFan:   { label: "Rotating fan", groups: [G.line], dens: 2, m: { h: .25, rot: .45 } },
+  sheet:    { label: "Sheet",        groups: [G.line], dens: 1, m: { v: .5 }, flow: 0 },
+  sky:      { label: "Liquid sky",   groups: [G.line], dens: 1, m: { h: .3 }, vpos: .75, flow: 15 },
+  cross:    { label: "Crossing sheets", groups: [G.line], dens: 3, m: { h: .75, v: .6 } },
+  xform:    { label: "X formation",  groups: [G.line], dens: 3, m: { h: .9, v: .9, hflip: .7 } },
+  tunnel:   { label: "Tunnel",       groups: [G.arc],  dens: 2, m: { rot: .55, v: .25 } },
+  tunnelX:  { label: "Tunnel burst", groups: [G.arc],  dens: 3, m: { rot: .95, h: .5, v: .5 } },
+  rays:     { label: "Ray array",    groups: [G.dot, G.bright], dens: 2, m: { h: .6, v: .3 } },
+  raysDense:{ label: "Dense rays",   groups: [G.bright], dens: 3, m: { h: .85, v: .7, rot: .4 } },
+  wave:     { label: "Figure-8 wave",groups: [G.line, G.dot], dens: 1, m: { h: .35, v: .55 } },
+  roll:     { label: "3D roll",      groups: [G.line], dens: 2, m: { hflip: .6, v: .35 } },
+  anim:     { label: "Animation",    groups: G.anims, dens: 1, m: { h: .2, v: .25 } },
+};
+// What a formation may become (coherent transitions, not a random picker).
+const NEXT = {
+  fan: ["rotFan", "cross", "tunnel", "wideFan", "xform"], wideFan: ["fan", "sky", "sheet", "rotFan"],
+  rotFan: ["tunnel", "fan", "cross", "raysDense"], sheet: ["cross", "sky", "wideFan", "roll"],
+  sky: ["wideFan", "sheet", "wave"], cross: ["xform", "fan", "sheet", "rays"],
+  xform: ["tunnelX", "cross", "raysDense", "fan"], tunnel: ["tunnelX", "rotFan", "rays", "wave"],
+  tunnelX: ["xform", "raysDense", "tunnel"], rays: ["raysDense", "fan", "cross", "wave"],
+  raysDense: ["xform", "tunnelX", "rays"], wave: ["sky", "wideFan", "tunnel", "roll"],
+  roll: ["sheet", "wave", "cross"], anim: ["wave", "sky", "fan", "tunnel"],
+};
+// Which formations suit each section, with weights.
+const SUIT = {
+  breakdown: { sky: 3, wave: 3, wideFan: 2, sheet: 2, roll: 1, tunnel: 1 },
+  build:     { fan: 2, rotFan: 3, tunnel: 3, rays: 2, cross: 1 },
+  drop:      { xform: 3, tunnelX: 3, raysDense: 3, cross: 2, fan: 1, rotFan: 1 },
+  club:      { sky: 3, wideFan: 3, sheet: 2, wave: 2, fan: 2, tunnel: 1, cross: 1, roll: 1 },
+};
+
+// --- Show state
+const show = {
+  sec: { name: "build", left: 4, total: 4 }, form: "fan", pal: "ice", graph: 40, colIdx: 0,
+  history: [], partyIdx: 0, spinSign: 1, blackoutTick: -1,
+  m: { h: 0, v: 0, rot: 0, hflip: 0, vflip: 0 },   // current (smoothed) motion
+  tgt: { h: 0, v: 0, rot: 0, hflip: 0, vflip: 0 },  // target motion
+};
 const PARTY_ORDER = [["breakdown", 8], ["build", 8], ["drop", 16], ["breakdown", 8], ["build", 4], ["drop", 16]];
-let partyIdx = 0;
+
+function weighted(obj, penalise = []) {
+  const items = Object.entries(obj).map(([k, w]) => [k, w * (penalise.includes(k) ? .15 : 1)]);
+  let r = Math.random() * items.reduce((a, [, w]) => a + w, 0);
+  for (const [k, w] of items) if ((r -= w) <= 0) return k;
+  return items[0][0];
+}
+function sectionEnergy() {
+  const s = show.sec, p = 1 - s.left / s.total;
+  if (chase === "club") return s.name === "drop" ? .65 : s.name === "build" ? .4 + .2 * p : .3;
+  return s.name === "drop" ? 1 : s.name === "build" ? .35 + .6 * p : .22;
+}
 function nextSection() {
-  if (chase === "party") { const [n, b] = PARTY_ORDER[partyIdx++ % PARTY_ORDER.length]; sec = { name: n, left: b, total: b }; }
+  if (chase === "party") { const [n, b] = PARTY_ORDER[show.partyIdx++ % PARTY_ORDER.length]; show.sec = { name: n, left: b, total: b }; }
   else {
-    const p = sec.name, r = Math.random();
-    let n = p === "build" ? "drop" : p === "drop" ? (r < .45 ? "drop" : r < .72 ? "build" : "breakdown") : (r < .65 ? "build" : "drop");
-    if (mic && micLevel < 25 && n === "drop") n = "breakdown";          // quiet room -> calm section
-    const bars = n === "build" ? 4 : n === "breakdown" ? (r < .5 ? 4 : 8) : (r < .5 ? 8 : 16);
-    sec = { name: n, left: bars, total: bars };
+    const p = show.sec.name, r = Math.random();
+    let n = p === "build" ? "drop" : p === "drop" ? (r < .5 ? "breakdown" : r < .8 ? "build" : "drop") : (r < .7 ? "build" : "breakdown");
+    if (mic && micLevel < 25 && n === "drop") n = "breakdown";
+    const bars = n === "build" ? 8 : n === "breakdown" ? 8 : 16;
+    show.sec = { name: n, left: bars, total: bars };
   }
-  axisPick = Math.floor(Math.random() * 2);
-  status((SHOWS[chase] ? SHOWS[chase].label : "") + ": " + sec.name.toUpperCase());
+  show.pal = pick(PAL_FOR[chase === "club" ? "club" : show.sec.name].filter(p => p !== show.pal));
+  newFormation(true);
+  status((SHOWS[chase] ? SHOWS[chase].label : "") + ": " + show.sec.name.toUpperCase() + " · " + F[show.form].label);
+}
+function newFormation(sectionChange) {
+  const suit = { ...SUIT[chase === "club" ? "club" : show.sec.name] };
+  if (chase === "mix" || (chase === "anim")) suit.anim = chase === "anim" ? 6 : 2;
+  // Prefer coherent transitions from the current formation, avoid recent ones.
+  const from = NEXT[show.form] || [];
+  const opts = {};
+  for (const [k, w] of Object.entries(suit)) opts[k] = w * (from.includes(k) ? 2 : sectionChange ? 1 : .4);
+  show.form = weighted(opts, show.history.slice(-3));
+  show.history.push(show.form);
+  show.graph = Math.round(rnd(0, 255));
+  show.colIdx = 0;
+  const f = F[show.form], e = sectionEnergy();
+  const speed = k => k ? Math.min(1, k * (.45 + .75 * e)) : 0;
+  show.tgt = { h: speed(f.m.h), v: speed(f.m.v), hflip: speed(f.m.hflip), vflip: speed(f.m.vflip),
+               rot: f.m.rot ? show.spinSign * speed(f.m.rot) : 0 };
+  if (chase === "club") show.tgt.rot *= .6;                               // CLUB: limited spin
 }
 
-const MOVES_HOT = ["fan", "tilt", "circle", "eight", "zigzag", "diag", "snap", "fan", "tilt", "circle"];
-const MOVES_COOL = ["fan", "tilt", "eight", "circle"];
-function newMove(energy) {
-  // Built-in motion speeds (all tested on the laser): sweep 128-255, spin CW 128-191 / CCW 192-255, 3D roll 128-255.
-  const sp = k => 128 + Math.round(Math.max(0, Math.min(1, k)) * 127);
-  const kind = pick(energy > .6 ? ["both", "both", "both", "vert", "horiz", "roll", "spin"] : ["vert", "horiz", "both", "roll"]);
-  const fast = () => rnd(.55, 1) * (.4 + .6 * energy) + .1;
-  const m = { kind, h: 0, v: 0, rot: 0, hflip: 0, vflip: 0 };
-  if (kind === "both" || kind === "horiz") m.h = sp(fast());
-  if (kind === "both" || kind === "vert") m.v = sp(fast());
-  if (kind === "roll") { m.hflip = sp(fast()); m.v = sp(fast() * .7); }
-  if (kind === "spin") { m.h = sp(fast()); }
-  if (Math.random() < .2 + .6 * energy) {                                   // spin layer
-    const k = Math.round(rnd(.4, 1) * energy * 63);
-    m.rot = Math.random() < .5 ? 128 + k : 192 + k;
-  }
-  if (Math.random() < .5 * energy) m.hflip = m.hflip || sp(fast());       // 3D roll layer
-  if (Math.random() < .3 * energy) m.vflip = sp(fast());
-  return m;
+// Smooth motion toward the target (momentum instead of jumps). Called every half beat.
+function easeMotion(rate) {
+  for (const k of ["h", "v", "hflip", "vflip", "rot"]) show.m[k] += (show.tgt[k] - show.m[k]) * rate;
 }
-function newLook(energy, animOk) {
+const spd = k => Math.abs(k) < .03 ? 0 : 128 + Math.round(Math.min(1, Math.abs(k)) * 127);
+const rotB = k => Math.abs(k) < .03 ? 0 : (k > 0 ? 128 : 192) + Math.round(Math.min(1, Math.abs(k)) * 63);
+
+// SAFETY: automated shows only park the vertical position at centre or above (never aimed downward).
+function buildScene() {
+  const f = F[show.form], pal = PALETTES[show.pal];
   const sc = baseScene();
-  sc.group = animOk && Math.random() < .5 ? pick(G.anims) : pick([G.line, G.line, G.dot, G.bright, G.line, G.arc]);
-  sc.color = C[pick(energy > .5 ? HOT : COOL)]; sc.flow = energy > .5 ? rnd(80, 127) : 20;
-  sc.size = rnd(200, 255); sc.zoom = energy > .7 && Math.random() < .25 ? 100 : 0;
-  sc.wave = energy < .4 && Math.random() < .4 ? 40 : 0;
+  sc.group = f.groups[show.graph % f.groups.length];
+  sc.graph = show.graph;
+  sc.color = pal.split && show.colIdx % 2 === 0 ? C.seg2 : pal.cols[show.colIdx % pal.cols.length];
+  sc.flow = f.flow ?? (sectionEnergy() > .6 ? 100 : 40);
+  sc.size = 255;
+  sc.hmove = spd(show.m.h) || 0;
+  sc.vmove = spd(show.m.v) || (f.vpos ? posByte(Math.max(0, f.vpos)) : 0);
+  sc.rot = rotB(show.m.rot);
+  sc.hflip = spd(show.m.hflip) || (f.faceOn ? 32 : 0);
+  sc.vflip = spd(show.m.vflip);
   return sc;
 }
 
 function chaseStep() {
-  const t = step++;                          // half-beat ticks
-  if (t % 8 === 0) { if (t === 0) { sec = { name: chase === "club" ? "drop" : "build", left: 4, total: 4 }; partyIdx = 0; if (chase === "party") nextSection(); } else if (--sec.left <= 0) nextSection(); }
-  if (chase === "anim") return animStep(t);
+  const t = step++;                                   // half-beat ticks; 8 per bar
   const beat = t % 2 === 0, inBar = t % 8, bar = Math.floor(t / 8);
-  const prog = 1 - sec.left / sec.total;
-  const beatSec = mic ? beatGap / 1000 : 60 / +$("bpm").value;
-  let energy = sec.name === "drop" ? 1 : sec.name === "build" ? .35 + .6 * prog : .2;
-  if (chase === "club") energy = sec.name === "breakdown" ? .25 : .7;
-  const animOk = chase === "mix" || (chase === "party" && sec.name === "breakdown");
-  const r = Math.random();
+  if (t === 0) { show.partyIdx = 0; show.history = []; show.sec = { name: chase === "club" ? "breakdown" : "build", left: 4, total: 4 };
+                 if (chase === "party") nextSection(); else { show.pal = pick(PAL_FOR[chase === "club" ? "club" : "build"]); newFormation(true); } }
+  else if (inBar === 0 && --show.sec.left <= 0) nextSection();
+  const S = show.sec.name, e = sectionEnergy(), prog = 1 - show.sec.left / show.sec.total;
 
-  if (!look || !move) { look = newLook(energy, animOk); move = newMove(energy); return; }
-  const flipSpin = m => ({ ...m, rot: m.rot >= 192 ? m.rot - 64 : m.rot >= 128 ? m.rot + 64 : 128 + 50 });   // reverse direction
-  const snapTo = m => ({ ...m, h: posByte(rnd(-1, 1) * H_RANGE), v: posByte(rnd(-1, 1)), rot: 0 });          // hard cut to a spot
+  // Phrases: formations evolve on phrase boundaries, not every beat.
+  const phraseBars = chase === "club" ? 8 : S === "drop" ? 2 : 4;
+  if (inBar === 0 && bar > 0 && bar % phraseBars === 0 && show.sec.left !== show.sec.total) newFormation(false);
 
-  if (chase === "club") {
-    // Groove: motion changes every 2 bars, looks on the beat, spin burst on the snare, big spin + roll every 4 bars.
-    if (beat) look = newLook(energy, animOk);
-    if (inBar === 0 && bar % 2 === 0) { move = newMove(energy); move.rot = 0; }
-    if (inBar === 4 && sec.name !== "breakdown") move = { ...move, rot: pick([182, 246]) };
-    if (inBar === 6) move = { ...move, rot: 0 };
-    if (bar % 4 === 3 && inBar === 0) move = { ...move, rot: pick([191, 255]), hflip: 230 };
-    return;
+  // Build: speeds keep rising inside the phrase; last half bar goes dark for anticipation.
+  if (S === "build") {
+    const ramp = .5 + .5 * prog;
+    for (const k of ["h", "v", "hflip"]) if (show.tgt[k]) show.tgt[k] = Math.min(1, Math.max(show.tgt[k], ramp));
+    if (chase !== "club" && show.sec.left === 1 && inBar >= 6) { if (inBar === 6) blackout(); return; }
   }
-  // RAVE / PARTY / MIX: random mix on every beat - look, motion, or both.
-  if (sec.name === "drop") {
-    if (inBar === 0 && Math.random() < .2) {              // sheet hold: one bar of wide line sheets tilting up/down
-      look = newLook(.3, false); look.group = G.line; look.flow = 0; look.size = 255;
-      move = { kind: "sheet", h: 0, v: 180, rot: 0, hflip: 0, vflip: 0 }; holdUntilTick = t + 8; return;
+  easeMotion(S === "drop" ? .7 : S === "build" ? .45 : .25);
+
+  // Micro-events: accents on beats / snares, never a full reset.
+  if (beat) {
+    const isSnare = inBar === 2 || inBar === 6;
+    if (chase === "club") {
+      if (inBar === 0) show.colIdx++;                                          // colour breathes per bar
+      if (isSnare && bar % 4 === 3) { show.m.rot = show.spinSign * .7; show.spinSign *= -1; }  // rare spin accent
+    } else if (S === "drop") {
+      show.colIdx++;                                                           // colour accent every beat
+      if (Math.random() < .5) { show.spinSign *= -1; show.tgt.rot = show.spinSign * Math.max(.5, Math.abs(show.tgt.rot)); show.m.rot = show.tgt.rot; } // spin reversal on the kick
+      if (isSnare && Math.random() < .4) show.graph = (show.graph + 37) % 256;   // snare: pattern snap
+    } else if (S === "build") {
+      if (inBar % 4 === 0 || prog > .6) show.colIdx++;
+      if (prog > .75) show.graph = (show.graph + 23) % 256;
     }
-    if (t < holdUntilTick) return;
-    if (beat && Math.random() < .15) strobeUntil = performance.now() + beatSec * 1000 * pick([.5, 1]);
-    if (Math.random() < .8) look = newLook(energy, animOk);              // new look every half beat
-    if (beat) move = r > .35 ? newMove(energy) : flipSpin(move);         // new motion or spin reversal on the kick
-    else if (r < .2) move = snapTo(move);                               // off-beat hard cut
-  } else if (sec.name === "build") {
-    if (beat || prog > .75) { look = newLook(energy, animOk); if (r < .5 || inBar === 0) move = newMove(energy); }
-  } else if (t % 8 === 0) {
-    look = newLook(energy, animOk); move = newMove(energy); move.rot = 0;
-    if (Math.random() < .5) { move.h = 0; move.hflip = 0; } else { move.v = 0; move.vflip = 0; }   // one slow axis
   }
+  queueScene(buildScene());
 }
 
-function animStep(t) {
-  // Built-in animations with slow built-in drift; your drawings mixed in.
-  if (t % 8 !== 0) return;
-  const cycle = t / 8, mine = loadMine();
-  if (mine.length && cycle % 5 === 4) { look = null; return sendFrame(drawFrame(strokesToPoints(pick(mine).strokes))); }
-  look = baseScene();
-  look.group = pick(G.anims); look.color = C[pick(["rainbow", "change", "seg4", "seg8", "white", "cyan"])]; look.flow = 30; look.size = 230;
-  move = { kind: "drift", h: pick([0, 150]), v: pick([140, 160]), rot: cycle % 4 === 3 ? pick([150, 214]) : 0, hflip: 0, vflip: 0 };
+let darkUntil = 0;
+function blackout() {      // anticipation before a drop (not a stop): blank frame, show resumes next tick
+  sendFrame("F0F1F2F3" + "00".repeat(16) + "0001" + "0000000001" + "F4F5F6F7");
 }
+
+function animStep(t) { chaseStep(); }   // ANIMATIONS uses the same engine with animation-weighted formations
 // ---------- Phone mic beat detection ----------
 // Low-band energy vs. its running average; a kick = jump above 1.35x average (min 280 ms apart).
 let mic = null, lastBeatAt = 0, beatGap = 470, micLevel = 100;
