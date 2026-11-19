@@ -5,228 +5,235 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Laser Setup</title>
 <style>
-  :root { --bg:#0d0f14; --card:#171a22; --line:#262b38; --text:#eef1f7; --dim:#8a93a8; --accent:#3cf0a0; --warn:#ff6b6b; }
-  * { box-sizing: border-box; }
+  :root { --bg:#0b0d12; --card:#151821; --line:#252a37; --text:#eef1f7; --dim:#8a93a8; --accent:#3cf0a0; --warn:#ff6b6b; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 -apple-system, system-ui, sans-serif; }
-  main { max-width:480px; margin:0 auto; padding:20px 16px 40px; }
-  h1 { font-size:22px; margin:4px 0 2px; }
-  .sub { color:var(--dim); margin:0 0 18px; font-size:14px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
-  button { font:inherit; border:0; border-radius:10px; padding:14px; width:100%; cursor:pointer; background:var(--line); color:var(--text); }
-  button.primary { background:var(--accent); color:#04120b; font-weight:600; }
-  button:disabled { opacity:.4; cursor:default; }
-  .seg { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-  .seg button.on { background:var(--accent); color:#04120b; font-weight:600; }
-  label { display:block; color:var(--dim); font-size:13px; margin:14px 0 6px; }
-  input[type=range] { width:100%; accent-color:var(--accent); }
-  .colors { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; }
-  .colors button { padding:0; height:40px; border:2px solid transparent; }
+  main { max-width:480px; margin:0 auto; padding:18px 16px 40px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; }
+  h1 { font-size:22px; margin:0; }
+  .pill { font-size:13px; padding:6px 10px; border-radius:99px; background:var(--line); color:var(--dim); white-space:nowrap; }
+  .pill.on { background:rgba(60,240,160,.15); color:var(--accent); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; margin-bottom:14px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 12px; font-weight:600; }
+  button { font:inherit; border:0; border-radius:12px; padding:14px; width:100%; cursor:pointer; background:var(--line); color:var(--text); }
+  button:disabled { opacity:.35; cursor:default; }
+  .primary { background:var(--accent); color:#04120b; font-weight:700; }
+  .shows { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .show { text-align:left; padding:16px 14px; min-height:96px; border:2px solid transparent; position:relative; }
+  .show b { display:block; font-size:19px; letter-spacing:.04em; }
+  .show span { display:block; font-size:13px; color:var(--dim); margin-top:4px; }
+  .show.active { border-color:var(--accent); background:rgba(60,240,160,.08); }
+  .show.active::after { content:"PLAYING"; position:absolute; top:10px; right:12px; font-size:10px; font-weight:700; color:var(--accent); letter-spacing:.08em; }
+  .show.busy { opacity:.6; }
+  label { display:flex; justify-content:space-between; color:var(--dim); font-size:14px; margin:4px 0 8px; }
+  input[type=range] { width:100%; accent-color:var(--accent); margin:0 0 16px; height:28px; }
+  .colors { display:grid; grid-template-columns:repeat(9,1fr); gap:6px; }
+  .colors button { padding:0; height:34px; border-radius:8px; border:2px solid transparent; }
   .colors button.on { border-color:var(--text); }
-  #status { font-size:14px; color:var(--dim); min-height:20px; margin-top:10px; }
+  #status { font-size:14px; color:var(--dim); min-height:20px; margin-top:10px; text-align:center; }
   #status.err { color:var(--warn); }
-  .hide { display:none; }
-  ol { padding-left:20px; color:var(--dim); font-size:14px; margin:0; }
-  ol li { margin:4px 0; }
-  button.big { padding:20px; font-size:18px; letter-spacing:.5px; }
-  .hint { color:var(--dim); font-size:13px; margin:10px 0 0; }
-  .row { display:flex; justify-content:space-between; font-size:13px; color:var(--dim); }
+  .link { background:none; color:var(--dim); padding:10px; font-size:14px; text-decoration:underline; }
+  details { color:var(--dim); font-size:14px; }
+  details summary { cursor:pointer; padding:4px 0; }
+  details ol { padding-left:20px; margin:8px 0 0; }
+  details li { margin:4px 0; }
+  [hidden] { display:none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Laser Setup</h1>
-  <p class="sub">Puts LightElf (TD5322A) lasers into sound mode. Settings stay on the laser.</p>
+  <header>
+    <h1>Laser Setup</h1>
+    <span class="pill" id="pill">Not connected</span>
+  </header>
 
   <div class="card" id="nosupport" hidden>
     <b>This browser can't use Bluetooth.</b>
-    <ol>
-      <li>iPhone/iPad: open this page in the free <b>Bluefy</b> app (Safari can't do Bluetooth).</li>
-      <li>Mac/PC/Android: use <b>Chrome</b> or <b>Edge</b>.</li>
-    </ol>
+    <p style="color:var(--dim);font-size:14px;margin:8px 0 0">iPhone: open this page in the free <b>Bluefy</b> app. Mac, PC or Android: use <b>Chrome</b>.</p>
+  </div>
+
+  <div class="card" id="connectCard">
+    <button class="primary" id="connect">Connect to laser</button>
+    <button class="link" id="connectAll">Laser not in the list? Show all Bluetooth devices</button>
+    <div id="status">Turn on the lead laser, close LightElf, then connect.</div>
   </div>
 
   <div class="card">
-    <ol>
-      <li>Close LightElf on every phone (it holds the laser).</li>
-      <li>Both lasers share one Bluetooth ID, so do <b>one at a time</b>: only one laser powered on.</li>
-      <li>Connect, pick settings, tap <b>Save to laser</b>. Then swap lasers and repeat.</li>
-    </ol>
-    <div style="height:12px"></div>
-    <button class="primary" id="connect">Connect to laser</button>
-    <div id="status"></div>
+    <h2>Shows: tap one, it starts right away</h2>
+    <div class="shows">
+      <button class="show" data-show="rave"><b>RAVE</b><span>Beams &amp; dots, hits on the beat</span></button>
+      <button class="show" data-show="club"><b>CLUB</b><span>Fast multi-beams, no sound needed</span></button>
+      <button class="show" data-show="lines"><b>LINES</b><span>Straight laser lines on the beat</span></button>
+      <button class="show" data-show="classic"><b>CLASSIC</b><span>Every built-in pattern on the beat</span></button>
+    </div>
   </div>
 
-  <div class="card hide" id="presets">
-    <label style="margin-top:0">One-tap presets (saves instantly)</label>
-    <button class="primary big" id="pRave">RAVE &mdash; beams &amp; dots to the music</button>
-    <div style="height:8px"></div>
-    <button class="big" id="pRaveAuto">RAVE AUTO &mdash; beams &amp; dots, no sound needed</button>
-    <div style="height:8px"></div>
-    <div class="seg">
-      <button id="pLines">Laser lines</button>
-      <button id="pAll">All patterns</button>
-    </div>
-    <p class="hint">RAVE, Laser lines and All patterns use SOUND mode, so the lasers change on the beat. RAVE AUTO keeps moving by itself at a set speed. Rave and Laser lines play only straight lines and dots: no shapes, no animations. Best in haze.</p>
-  </div>
-
-  <div class="card hide" id="controls">
-    <label>Play mode</label>
-    <div class="seg">
-      <button data-rd="255" id="rdSound">SOUND</button>
-      <button data-rd="0" id="rdAuto">AUTO</button>
-    </div>
-
-    <label>Sound sensitivity <span id="sensVal"></span></label>
-    <input type="range" id="sens" min="0" max="100" step="1">
-    <div class="row"><span>needs loud music</span><span>reacts to anything</span></div>
-
-    <label>Color</label>
-    <div class="colors" id="colors"></div>
-
-    <label>Speed <span id="speedVal"></span></label>
+  <div class="card">
+    <h2>Fine-tune: changes apply when you let go</h2>
+    <label><span>Speed</span><span id="speedVal">–</span></label>
     <input type="range" id="speed" min="0" max="100" step="1">
+    <label><span>Sound sensitivity</span><span id="sensVal">–</span></label>
+    <input type="range" id="sens" min="0" max="100" step="1">
+    <label><span>Color</span><span id="colorName">–</span></label>
+    <div class="colors" id="colors"></div>
+  </div>
 
-    <div style="height:16px"></div>
-    <button class="primary" id="save">Save to laser</button>
-    <div style="height:8px"></div>
-    <button id="disconnect">Disconnect (then swap lasers)</button>
+  <div class="card">
+    <details>
+      <summary>Help</summary>
+      <ol>
+        <li>Connect to the <b>lead</b> laser (cable in DMX OUT). The other laser in slave mode copies it.</li>
+        <li>Both lasers share one Bluetooth ID, so only one can connect. That's normal.</li>
+        <li>After a power-off the laser goes back to its back-panel mode. Tap a show again.</li>
+        <li>No laser in the list? Close LightElf, check phone Bluetooth is on, switch the laser off and on.</li>
+      </ol>
+    </details>
+    <button class="link" id="disconnect" hidden>Disconnect</button>
   </div>
 </main>
 
 <script>
 const SVC = 0xff00, TX = 0xff02, RX = 0xff01;
-// Color codes from the LightElf app; order as the app shows them.
-const COLORS = [[1,"#ff2a2a","Red"],[4,"#ffe23c","Yellow"],[2,"#2aff5a","Green"],[5,"#2affff","Cyan"],[3,"#2a5aff","Blue"],
-                [6,"#b02aff","Purple"],[7,"#ffffff","White"],[8,"linear-gradient(90deg,#f22,#2f2,#22f)","Jump"],
-                [9,"conic-gradient(#f22,#ff2,#2f2,#2ff,#22f,#f2f,#f22)","Full RGB"]];
 const $ = id => document.getElementById(id);
-let dev, tx, rxHex = "", settings = null;
+// Laser color codes (from the LightElf app).
+const COLORS = [[8,"conic-gradient(#f22,#ff2,#2f2,#2ff,#22f,#f2f,#f22)","Jump"],[9,"linear-gradient(90deg,#f22,#2f2,#22f)","RGB"],
+  [1,"#ff2a2a","Red"],[2,"#2aff5a","Green"],[3,"#2a5aff","Blue"],[4,"#ffe23c","Yellow"],[5,"#2affff","Cyan"],[6,"#b02aff","Purple"],[7,"#ffffff","White"]];
 
-const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2,"0")).join("").toUpperCase();
-const bytes = h => new Uint8Array(h.match(/../g).map(x => parseInt(x,16)));
-function status(msg, err=false) { $("status").textContent = msg; $("status").className = err ? "err" : ""; }
+// Settings block bytes (0-based): 0 group, 2 color, 5 speed, 8 SOUND(255)/AUTO(0), 9 sensitivity.
+// Pattern groups 2 (Line), 3, 5, 6 (Outdoor) take 9 bytes each from byte 16: [0x80 = ticked only][64 tick bits, words 3..0].
+const GROUP_OFFSET = { 2: 16, 3: 25, 5: 34, 6: 43 };
+const RAVE_BEAMS  = [...Array(64).keys()].map(i => i + 1).filter(n => ![11,19,24,29,32,40,57,58].includes(n));
+const MULTI_BEAMS = [7,8,9,10,12,13,17,20,21,23,25,31,33,34,35,36,37,46,47,48,49,50,51,56,59,60,61,62,63,64];
+const LINE_BEAMS  = [1,3,4,5,8,10,20,21,24,25,28,34,36,39,41,42,43,44,45,46,48,49,52,56,60];
+
+const SHOWS = {
+  rave:    { label: "RAVE",    group: 6, pick: RAVE_BEAMS,  sound: true,  color: 8, speed: 220 },
+  club:    { label: "CLUB",    group: 6, pick: MULTI_BEAMS, sound: false, color: 8, speed: 255 },
+  lines:   { label: "LINES",   group: 2, pick: LINE_BEAMS,  sound: true,  color: 9, speed: 220 },
+  classic: { label: "CLASSIC", group: 1, pick: null,        sound: true,  color: 9, speed: 200 },
+};
+
+let dev, tx, rxHex = "", settings = null, active = null, busy = false;
+const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+const bytes = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
+const pct = v => Math.round(v / 255 * 100), raw = p => Math.round(p / 100 * 255);
+function status(msg, err = false) { $("status").textContent = msg; $("status").className = err ? "err" : ""; }
 
 if (!navigator.bluetooth) { $("nosupport").hidden = false; $("connect").disabled = true; }
 
-async function write(h) {               // 20-byte chunks with acks, works on every phone
+async function write(h) {
   const b = bytes(h);
-  for (let i = 0; i < b.length; i += 20) await tx.writeValueWithResponse(b.slice(i, i+20));
+  for (let i = 0; i < b.length; i += 20) await tx.writeValueWithResponse(b.slice(i, i + 20));
 }
-
 async function readSettings() {
   rxHex = "";
-  const rnd = hex(crypto.getRandomValues(new Uint8Array(4)));
-  await write("E0E1E2E3" + rnd + "E4E5E6E7");
+  await write("E0E1E2E3" + hex(crypto.getRandomValues(new Uint8Array(4))) + "E4E5E6E7");
   for (let i = 0; i < 50; i++) {
     await new Promise(r => setTimeout(r, 100));
     const m = /C0C1C2C3(.+?)C4C5C6C7/.exec(rxHex);
     if (m && rxHex.includes("E4E5E6E7")) return bytes(m[1]);
   }
-  throw new Error("Laser didn't answer");
+  throw new Error("The laser didn't answer. Switch it off and on, then connect again.");
+}
+function pickPatterns(group, list) {
+  const o = GROUP_OFFSET[group]; if (o === undefined) return;
+  const w = [0, 0, 0, 0];
+  list.forEach(n => { w[Math.floor((n - 1) / 16)] |= 1 << ((n - 1) % 16); });
+  settings[o] = 0x80;
+  [3, 2, 1, 0].forEach((k, j) => { settings[o + 1 + 2 * j] = w[k] >> 8; settings[o + 2 + 2 * j] = w[k] & 255; });
+}
+function guessActive() {
+  if (settings[0] === 6) return settings[8] === 255 ? "rave" : "club";
+  if (settings[0] === 2) return "lines";
+  if (settings[0] === 1) return "classic";
+  return null;
 }
 
 function render() {
-  const rd = settings[8], sens = Math.round(settings[9] / 255 * 100), sp = Math.round(settings[5] / 255 * 100);
-  $("rdSound").classList.toggle("on", rd === 255);
-  $("rdAuto").classList.toggle("on", rd !== 255);
-  $("sens").value = sens; $("sensVal").textContent = sens + "%";
-  $("speed").value = sp; $("speedVal").textContent = sp + "%";
-  [...$("colors").children].forEach(b => b.classList.toggle("on", +b.dataset.c === settings[2]));
+  const connected = !!(dev && dev.gatt.connected && settings);
+  $("pill").textContent = connected ? "Connected" : "Not connected";
+  $("pill").classList.toggle("on", connected);
+  $("connect").hidden = connected; $("connectAll").hidden = connected; $("disconnect").hidden = !connected;
+  document.querySelectorAll(".show").forEach(b => {
+    b.classList.toggle("active", connected && b.dataset.show === active);
+    b.disabled = !connected || busy;
+  });
+  ["speed", "sens"].forEach(id => $(id).disabled = !connected || busy);
+  [...$("colors").children].forEach(b => { b.disabled = !connected || busy; b.classList.toggle("on", connected && +b.dataset.c === settings[2]); });
+  if (connected) {
+    $("speed").value = pct(settings[5]); $("speedVal").textContent = pct(settings[5]) + "%";
+    $("sens").value = pct(settings[9]);
+    $("sensVal").textContent = settings[8] === 255 ? pct(settings[9]) + "%" : "off (CLUB ignores sound)";
+    const c = COLORS.find(c => c[0] === settings[2]); $("colorName").textContent = c ? c[2] : "–";
+  }
 }
 
+// One change at a time; buttons lock while sending.
+async function apply(change, msg) {
+  if (busy || !settings) return;
+  busy = true; render();
+  try {
+    change();
+    status("Sending…");
+    await write("C0C1C2C3" + hex(settings) + "C4C5C6C7");
+    settings = await readSettings();
+    status(msg);
+  } catch (e) { status(e.message, true); }
+  busy = false; render();
+}
+
+document.querySelectorAll(".show").forEach(b => b.onclick = () => {
+  const s = SHOWS[b.dataset.show];
+  apply(() => {
+    settings[0] = s.group;
+    if (s.pick) pickPatterns(s.group, s.pick);
+    settings[8] = s.sound ? 255 : 0;
+    settings[2] = s.color;
+    settings[5] = s.speed;
+    if (s.sound && settings[9] < 128) settings[9] = 160;
+    active = b.dataset.show;
+  }, s.label + " is playing.");
+});
+$("speed").oninput = e => $("speedVal").textContent = e.target.value + "%";
+$("speed").onchange = e => apply(() => settings[5] = raw(+e.target.value), "Speed set to " + e.target.value + "%.");
+$("sens").oninput = e => $("sensVal").textContent = e.target.value + "%";
+$("sens").onchange = e => apply(() => settings[9] = raw(+e.target.value), "Sensitivity set to " + e.target.value + "%.");
 COLORS.forEach(([c, bg, name]) => {
   const b = document.createElement("button");
   b.dataset.c = c; b.title = name; b.setAttribute("aria-label", name); b.style.background = bg;
-  b.onclick = () => { settings[2] = c; render(); };
+  b.onclick = () => apply(() => settings[2] = c, "Color: " + name + ".");
   $("colors").appendChild(b);
 });
-document.querySelectorAll("[data-rd]").forEach(b => b.onclick = () => { settings[8] = +b.dataset.rd; render(); });
-$("sens").oninput = e => { settings[9] = Math.round(e.target.value / 100 * 255); render(); };
-$("speed").oninput = e => { settings[5] = Math.round(e.target.value / 100 * 255); render(); };
 
-$("connect").onclick = async () => {
+async function connect(showAll) {
   try {
-    status("Pick the laser in the list…");
-    dev = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: "TD53" }, { namePrefix: "ELF" }, { services: [SVC] }], optionalServices: [SVC] });
+    $("connect").disabled = true;
+    status(showAll ? "Pick TD5322A… (or an unnamed device) in the list." : "Pick the laser (TD5322A…) in the list.");
+    dev = await navigator.bluetooth.requestDevice(showAll
+      ? { acceptAllDevices: true, optionalServices: [SVC] }
+      : { filters: [{ namePrefix: "TD53" }, { namePrefix: "ELF" }, { services: [SVC] }], optionalServices: [SVC] });
     status("Connecting…");
-    const gatt = await dev.gatt.connect();
-    const svc = await gatt.getPrimaryService(SVC);
+    let svc;
+    try { svc = await (await dev.gatt.connect()).getPrimaryService(SVC); }
+    catch { dev.gatt.disconnect(); throw new Error("That device isn't a laser. Try again and pick TD5322A…"); }
     tx = await svc.getCharacteristic(TX);
     const rx = await svc.getCharacteristic(RX);
     rx.addEventListener("characteristicvaluechanged", e => rxHex += hex(e.target.value.buffer));
     await rx.startNotifications();
-    dev.addEventListener("gattserverdisconnected", () => {
-      $("controls").classList.add("hide"); $("presets").classList.add("hide"); $("connect").disabled = false; status("Disconnected. Swap lasers and connect again.");
-    });
-    status("Reading laser settings…");
+    dev.addEventListener("gattserverdisconnected", () => { settings = null; active = null; busy = false; render(); status("Disconnected. Tap Connect to reconnect."); });
+    status("Reading the laser…");
     settings = await readSettings();
-    render();
-    $("controls").classList.remove("hide"); $("presets").classList.remove("hide"); $("connect").disabled = true;
-    status("Connected. Current mode: " + (settings[8] === 255 ? "SOUND" : "AUTO"));
-  } catch (e) { status(e.message, true); }
-};
-
-$("save").onclick = async () => {
-  try {
-    status("Saving…");
-    await write("C0C1C2C3" + hex(settings) + "C4C5C6C7");
-    settings = await readSettings();     // read back to confirm
-    render();
-    status("Saved. Laser is in " + (settings[8] === 255 ? "SOUND" : "AUTO") + " mode.");
-  } catch (e) { status(e.message, true); }
-};
-
-// ---- Presets ----
-// Settings block bytes (0-based): 0 mode, 2 color, 5 speed, 8 SOUND/AUTO, 9 sensitivity.
-// Pattern groups 2 (Line), 3 (Animation), 5 (Christmas), 6 (Outdoor) each take 9 bytes from byte 16:
-//   [play mode: 0 = loop all, 0x80 = only ticked] [64 tick bits as words 3,2,1,0, big-endian].
-const GROUP_OFFSET = { 2: 16, 3: 25, 5: 34, 6: 43 };
-const SHAPES_IN_OUTDOOR = [11, 19, 24, 29, 32, 40, 57, 58];          // circles, squares, triangle
-const OUTDOOR_BEAMS = [...Array(64).keys()].map(i => i + 1).filter(n => !SHAPES_IN_OUTDOOR.includes(n));
-const LINE_BEAMS = [1, 3, 4, 5, 8, 10, 20, 21, 24, 25, 28, 34, 36, 39, 41, 42, 43, 44, 45, 46, 48, 49, 52, 56, 60];
-
-function pickPatterns(group, patterns) {
-  const words = [0, 0, 0, 0];
-  patterns.forEach(n => { words[Math.floor((n - 1) / 16)] |= 1 << ((n - 1) % 16); });
-  const o = GROUP_OFFSET[group];
-  settings[o] = patterns ? 0x80 : 0;
-  [3, 2, 1, 0].forEach((w, k) => { settings[o + 1 + 2 * k] = words[w] >> 8; settings[o + 2 + 2 * k] = words[w] & 255; });
+    active = guessActive();
+    status(active ? SHOWS[active].label + " is playing." : "Connected. Tap a show.");
+  } catch (e) {
+    status(e.name === "NotFoundError" ? "No laser picked. Close LightElf, switch the laser off and on, try again." : e.message, true);
+  }
+  $("connect").disabled = false; render();
 }
-
-async function applyPreset(name, fn) {
-  try {
-    fn();
-    render();
-    status("Sending " + name + "…");
-    await write("C0C1C2C3" + hex(settings) + "C4C5C6C7");
-    settings = await readSettings();
-    render();
-    status(name + " is on. (Resets to the back-panel mode after power-off.)");
-  } catch (e) { status(e.message, true); }
-}
-
-function rave(sound) {
-  settings[0] = 6;                              // Outdoor group: lines + dots
-  pickPatterns(6, OUTDOOR_BEAMS);
-  settings[2] = 8;                              // color: Jump
-  settings[8] = sound ? 255 : 0;                // SOUND or AUTO
-  if (sound && settings[9] < 128) settings[9] = 160;   // sensitivity at least ~63%
-  if (!sound && settings[5] < 150) settings[5] = 200;  // AUTO: lively speed
-}
-$("pRave").onclick = () => applyPreset("RAVE", () => rave(true));
-$("pRaveAuto").onclick = () => applyPreset("RAVE AUTO", () => rave(false));
-$("pLines").onclick = () => applyPreset("Laser lines", () => {
-  settings[0] = 2;                              // Line group, line patterns only
-  pickPatterns(2, LINE_BEAMS);
-  settings[2] = 9;                              // full RGB
-  settings[8] = 255;
-});
-$("pAll").onclick = () => applyPreset("All patterns", () => {
-  settings[0] = 1;                              // Random: everything
-  settings[8] = 255;
-});
-
+$("connect").onclick = () => connect(false);
+$("connectAll").onclick = () => connect(true);
 $("disconnect").onclick = () => dev && dev.gatt.connected && dev.gatt.disconnect();
+render();
 </script>
 </body>
 </html>
