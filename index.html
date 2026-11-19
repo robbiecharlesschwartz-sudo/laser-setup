@@ -75,6 +75,7 @@
   </div>
 
   <div class="card">
+    <button id="pauseBtn" class="primary" style="background:#ff6b6b;color:#1a0505;margin-bottom:12px">PAUSE (lights off)</button>
     <h2>Shows: tap one, it starts right away</h2>
     <div class="shows">
       <button class="show" data-show="rave"><b>RAVE</b><span>Spins, flips, sweeps up/down + side to side, all mixed; hits on the beat</span></button>
@@ -835,6 +836,12 @@ async function connect(showAll) {
 }
 $("connect").onclick = () => connect(false);
 $("connectAll").onclick = () => connect(true);
+$("pauseBtn").onclick = async () => {
+  if (!tx) return status("Connect first, or use the laser's power switch.", true);
+  stopChase(); active = null; render();
+  try { await write("F0F1F2F3" + "00".repeat(16) + "0001" + "0000000001" + "F4F5F6F7"); status("Paused: lights off. Tap any show to start again."); }
+  catch (e) { status(e.message, true); }
+};
 $("disconnect").onclick = () => dev && dev.gatt.connected && dev.gatt.disconnect();
 render();
 </script>
