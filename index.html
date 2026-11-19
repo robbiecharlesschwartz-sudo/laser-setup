@@ -147,7 +147,7 @@ $("speed").oninput = e => { settings[5] = Math.round(e.target.value / 100 * 255)
 $("connect").onclick = async () => {
   try {
     status("Pick the laser in the list…");
-    dev = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: "TD5322A_" }], optionalServices: [SVC] });
+    dev = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: "TD53" }, { namePrefix: "ELF" }, { services: [SVC] }], optionalServices: [SVC] });
     status("Connecting…");
     const gatt = await dev.gatt.connect();
     const svc = await gatt.getPrimaryService(SVC);
