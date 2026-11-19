@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laser Setup</title>
+<style>
+  :root { --bg:#0d0f14; --card:#171a22; --line:#262b38; --text:#eef1f7; --dim:#8a93a8; --accent:#3cf0a0; --warn:#ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 -apple-system, system-ui, sans-serif; }
+  main { max-width:480px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:22px; margin:4px 0 2px; }
+  .sub { color:var(--dim); margin:0 0 18px; font-size:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+  button { font:inherit; border:0; border-radius:10px; padding:14px; width:100%; cursor:pointer; background:var(--line); color:var(--text); }
+  button.primary { background:var(--accent); color:#04120b; font-weight:600; }
+  button:disabled { opacity:.4; cursor:default; }
+  .seg { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .seg button.on { background:var(--accent); color:#04120b; font-weight:600; }
+  label { display:block; color:var(--dim); font-size:13px; margin:14px 0 6px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .colors { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; }
+  .colors button { padding:0; height:40px; border:2px solid transparent; }
+  .colors button.on { border-color:var(--text); }
+  #status { font-size:14px; color:var(--dim); min-height:20px; margin-top:10px; }
+  #status.err { color:var(--warn); }
+  .hide { display:none; }
+  ol { padding-left:20px; color:var(--dim); font-size:14px; margin:0; }
+  ol li { margin:4px 0; }
+  .row { display:flex; justify-content:space-between; font-size:13px; color:var(--dim); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Laser Setup</h1>
+  <p class="sub">Puts LightElf (TD5322A) lasers into sound mode. Settings stay on the laser.</p>
+
+  <div class="card" id="nosupport" hidden>
+    <b>This browser can't use Bluetooth.</b>
+    <ol>
+      <li>iPhone/iPad: open this page in the free <b>Bluefy</b> app (Safari can't do Bluetooth).</li>
+      <li>Mac/PC/Android: use <b>Chrome</b> or <b>Edge</b>.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <ol>
+      <li>Close LightElf on every phone (it holds the laser).</li>
+      <li>Both lasers share one Bluetooth ID, so do <b>one at a time</b>: only one laser powered on.</li>
+      <li>Connect, pick settings, tap <b>Save to laser</b>. Then swap lasers and repeat.</li>
+    </ol>
+    <div style="height:12px"></div>
+    <button class="primary" id="connect">Connect to laser</button>
+    <div id="status"></div>
+  </div>
+
+  <div class="card hide" id="controls">
+    <label>Play mode</label>
+    <div class="seg">
+      <button data-rd="255" id="rdSound">SOUND</button>
+      <button data-rd="0" id="rdAuto">AUTO</button>
+    </div>
+
+    <label>Sound sensitivity <span id="sensVal"></span></label>
+    <input type="range" id="sens" min="0" max="100" step="1">
+    <div class="row"><span>needs loud music</span><span>reacts to anything</span></div>
+
+    <label>Color</label>
+    <div class="colors" id="colors"></div>
+
+    <label>Speed <span id="speedVal"></span></label>
+    <input type="range" id="speed" min="0" max="100" step="1">
+
+    <div style="height:16px"></div>
+    <button class="primary" id="save">Save to laser</button>
+    <div style="height:8px"></div>
+    <button id="disconnect">Disconnect (then swap lasers)</button>
+  </div>
+</main>
+
+<script>
+const SVC = 0xff00, TX = 0xff02, RX = 0xff01;
+// Color codes from the LightElf app; order as the app shows them.
+const COLORS = [[1,"#ff2a2a","Red"],[4,"#ffe23c","Yellow"],[2,"#2aff5a","Green"],[5,"#2affff","Cyan"],[3,"#2a5aff","Blue"],
+                [6,"#b02aff","Purple"],[7,"#ffffff","White"],[8,"linear-gradient(90deg,#f22,#2f2,#22f)","Jump"],
+                [9,"conic-gradient(#f22,#ff2,#2f2,#2ff,#22f,#f2f,#f22)","Full RGB"]];
+const $ = id => document.getElementById(id);
+let dev, tx, rxHex = "", settings = null;
+
+const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2,"0")).join("").toUpperCase();
+const bytes = h => new Uint8Array(h.match(/../g).map(x => parseInt(x,16)));
+function status(msg, err=false) { $("status").textContent = msg; $("status").className = err ? "err" : ""; }
+
+if (!navigator.bluetooth) { $("nosupport").hidden = false; $("connect").disabled = true; }
+
+async function write(h) {               // 20-byte chunks with acks, works on every phone
+  const b = bytes(h);
+  for (let i = 0; i < b.length; i += 20) await tx.writeValueWithResponse(b.slice(i, i+20));
+}
+
+async function readSettings() {
+  rxHex = "";
+  const rnd = hex(crypto.getRandomValues(new Uint8Array(4)));
+  await write("E0E1E2E3" + rnd + "E4E5E6E7");
+  for (let i = 0; i < 50; i++) {
+    await new Promise(r => setTimeout(r, 100));
+    const m = /C0C1C2C3(.+?)C4C5C6C7/.exec(rxHex);
+    if (m && rxHex.includes("E4E5E6E7")) return bytes(m[1]);
+  }
+  throw new Error("Laser didn't answer");
+}
+
+function render() {
+  const rd = settings[8], sens = Math.round(settings[9] / 255 * 100), sp = Math.round(settings[5] / 255 * 100);
+  $("rdSound").classList.toggle("on", rd === 255);
+  $("rdAuto").classList.toggle("on", rd !== 255);
+  $("sens").value = sens; $("sensVal").textContent = sens + "%";
+  $("speed").value = sp; $("speedVal").textContent = sp + "%";
+  [...$("colors").children].forEach(b => b.classList.toggle("on", +b.dataset.c === settings[2]));
+}
+
+COLORS.forEach(([c, bg, name]) => {
+  const b = document.createElement("button");
+  b.dataset.c = c; b.title = name; b.setAttribute("aria-label", name); b.style.background = bg;
+  b.onclick = () => { settings[2] = c; render(); };
+  $("colors").appendChild(b);
+});
+document.querySelectorAll("[data-rd]").forEach(b => b.onclick = () => { settings[8] = +b.dataset.rd; render(); });
+$("sens").oninput = e => { settings[9] = Math.round(e.target.value / 100 * 255); render(); };
+$("speed").oninput = e => { settings[5] = Math.round(e.target.value / 100 * 255); render(); };
+
+$("connect").onclick = async () => {
+  try {
+    status("Pick the laser in the list…");
+    dev = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: "TD5322A_" }], optionalServices: [SVC] });
+    status("Connecting…");
+    const gatt = await dev.gatt.connect();
+    const svc = await gatt.getPrimaryService(SVC);
+    tx = await svc.getCharacteristic(TX);
+    const rx = await svc.getCharacteristic(RX);
+    rx.addEventListener("characteristicvaluechanged", e => rxHex += hex(e.target.value.buffer));
+    await rx.startNotifications();
+    dev.addEventListener("gattserverdisconnected", () => {
+      $("controls").classList.add("hide"); $("connect").disabled = false; status("Disconnected. Swap lasers and connect again.");
+    });
+    status("Reading laser settings…");
+    settings = await readSettings();
+    render();
+    $("controls").classList.remove("hide"); $("connect").disabled = true;
+    status("Connected. Current mode: " + (settings[8] === 255 ? "SOUND" : "AUTO"));
+  } catch (e) { status(e.message, true); }
+};
+
+$("save").onclick = async () => {
+  try {
+    status("Saving…");
+    await write("C0C1C2C3" + hex(settings) + "C4C5C6C7");
+    settings = await readSettings();     // read back to confirm
+    render();
+    status("Saved. Laser is in " + (settings[8] === 255 ? "SOUND" : "AUTO") + " mode.");
+  } catch (e) { status(e.message, true); }
+};
+
+$("disconnect").onclick = () => dev && dev.gatt.connected && dev.gatt.disconnect();
+</script>
+</body>
+</html>
