@@ -127,12 +127,12 @@
   <div class="card">
     <h2><span class="n">01</span>Shows<span class="hint">Tap to start</span></h2>
     <div class="shows">
-      <button class="show" data-show="rave"><i>A</i><b>Rave</b><span>Sound ON. Tunnels, X formations, dense rays. Drops hit hard.</span></button>
+      <button class="show" data-show="rave"><i>A</i><b>Rave</b><span>Runs on the lasers' own mic. Beams, dense rays, fans; new set every phrase.</span></button>
       <button class="show" data-show="club"><i>B</i><b>Club</b><span>Liquid skies, wide fans, sheets. Long phrases.</span></button>
       <button class="show" data-show="lines"><i>C</i><b>Lines</b><span>Straight beams on the beat.</span></button>
       <button class="show" data-show="classic"><i>D</i><b>Classic</b><span>Every built-in pattern.</span></button>
       <button class="show wide" data-show="party"><i>E</i><b>Party Set</b><span>Pre-made arc on loop — breakdown, build, drop.</span></button>
-      <button class="show" data-show="mix"><i>F</i><b>Rave + Anim</b><span>Beams and animations trading off.</span></button>
+      <button class="show" data-show="mix"><i>F</i><b>Rave + Anim</b><span>Lasers' own mic: beams and animations.</span></button>
       <button class="show" data-show="anim"><i>G</i><b>Animations</b><span>Built-in drawings in motion.</span></button>
     </div>
     <div class="seg" style="margin-top:8px">
@@ -190,6 +190,8 @@
         <li>Only one app can hold a laser at a time — close LightElf and other tabs first.</li>
         <li>After a power-off the laser returns to its back-panel mode. Tap a show again.</li>
         <li>Not listed? Turn phone Bluetooth on, power-cycle the laser, try again.</li>
+        <li><b>Rave</b> and <b>Rave + Anim</b> run on the lasers' own microphone: they need the music loud near the lasers (phone speakers are too quiet). Sensitivity is in Fine-tune.</li>
+        <li><b>Aim</b> moves everything in Club / Party / Animations; in Rave, Lines and Classic it can shift the show one way only (hardware limit).</li>
         <li>Mount the lasers above head height. Never aim beams at people.</li>
       </ol>
     </details>
@@ -251,11 +253,24 @@ function status(msg, err = false) { $("status").textContent = msg; $("status").c
 
 if (!navigator.bluetooth) { $("nosupport").hidden = false; $("connect").disabled = true; }
 
-async function write(h) {
+// ---- Transport: ONE serialized queue for every write (Web Bluetooth rejects overlapping GATT writes,
+// which silently dropped button presses while a show was streaming). No-ack writes (acked ones are very slow).
+let txChain = Promise.resolve(), txBusy = 0;
+async function rawWrite(h) {
   const b = bytes(h);
-  for (let i = 0; i < b.length; i += 20) await tx.writeValueWithResponse(b.slice(i, i + 20));
+  for (let i = 0; i < b.length; i += 20) {
+    const part = b.slice(i, i + 20);
+    if (tx.writeValueWithoutResponse) await tx.writeValueWithoutResponse(part); else await tx.writeValueWithResponse(part);
+  }
 }
-async function readSettings() {
+function write(h) {
+  if (!tx) return Promise.reject(new Error("Not connected"));
+  txBusy++;
+  const p = txChain.then(() => rawWrite(h)).finally(() => { txBusy--; });
+  txChain = p.catch(() => {});
+  return p;
+}
+async function readSettings(tries = 2) {
   rxHex = "";
   await write("E0E1E2E3" + hex(crypto.getRandomValues(new Uint8Array(4))) + "E4E5E6E7");
   for (let i = 0; i < 50; i++) {
@@ -263,6 +278,7 @@ async function readSettings() {
     const m = /C0C1C2C3(.+?)C4C5C6C7/.exec(rxHex);
     if (m && rxHex.includes("E4E5E6E7")) return bytes(m[1]);
   }
+  if (tries > 1) return readSettings(tries - 1);
   throw new Error("The laser didn't answer. Switch it off and on, then connect again.");
 }
 function pickPatterns(group, list) {
@@ -300,17 +316,11 @@ function render() {
 }
 
 // One change at a time; buttons lock while sending.
-async function apply(change, msg) {
-  if (busy || !settings) return;
-  busy = true; render();
-  try {
-    change();
-    status("Sending…");
-    await write("C0C1C2C3" + hex(settings) + "C4C5C6C7");
-    settings = await readSettings();
-    status(msg);
-  } catch (e) { status(e.message, true); }
-  busy = false; render();
+async function apply(change, msg) {          // instant: change local settings, send once, no slow read-back
+  if (!settings) return status("Connect first.", true);
+  try { change(); await write("C0C1C2C3" + hex(settings) + "C4C5C6C7"); status(msg); }
+  catch (e) { status(e.message, true); }
+  render();
 }
 
 // ---------- Beat chase engine ----------
@@ -323,15 +333,9 @@ const DENSE = [13, 25, 34, 35, 49, 50, 51, 61, 64, 7, 8, 33, 47, 48, 23, 20, 36,
 const PAIRS = [[1, 3], [1, 5], [6, 7], [3, 7], [1, 7], [2, 5], [3, 6], [1, 6]];
 let lastLook = [13];
 const CLUB_COLORS = [1, 3, 7, 6, 5, 4, 2, 9];
-let chase = null, step = 0, sending = false, wakeLock = null;
+let chase = null, step = 0, wakeLock = null;
 
-async function fastWrite(h) {          // no-ack writes: quick enough to change looks on every beat
-  const b = bytes(h);
-  for (let i = 0; i < b.length; i += 20) {
-    const part = b.slice(i, i + 20);
-    if (tx.writeValueWithoutResponse) await tx.writeValueWithoutResponse(part); else await tx.writeValueWithResponse(part);
-  }
-}
+const fastWrite = h => write(h);
 function beamFrame(list, color, sound) {
   const s = new Uint8Array(settings);
   const save = settings; settings = s;
@@ -410,13 +414,14 @@ function redraw() {
   $("ptCount").textContent = strokesToPoints(strokes).length + " points";
 }
 function padXY(e) { const r = $("pad").getBoundingClientRect(); return [(e.clientX - r.left) / r.width * 600, (e.clientY - r.top) / r.height * 600]; }
-$("pad").onpointerdown = e => { $("pad").setPointerCapture(e.pointerId); drawing = { c: pen, pts: [padXY(e)] }; strokes.push(drawing); redraw(); };
-$("pad").onpointermove = e => {
+$("pad").addEventListener("pointerdown", e => { $("pad").setPointerCapture(e.pointerId); drawing = { c: pen, pts: [padXY(e)] }; strokes.push(drawing); redraw(); });
+$("pad").addEventListener("pointermove", e => {
   if (!drawing) return;
   const p = padXY(e), q = drawing.pts[drawing.pts.length - 1];
   if (Math.hypot(p[0] - q[0], p[1] - q[1]) >= 12) { drawing.pts.push(p); redraw(); }
-};
-$("pad").onpointerup = $("pad").onpointercancel = () => { if (drawing && drawing.pts.length < 2) strokes.pop(); drawing = null; redraw(); };
+});
+const padUp = () => { if (drawing && drawing.pts.length < 2) strokes.pop(); drawing = null; redraw(); };
+$("pad").addEventListener("pointerup", padUp); $("pad").addEventListener("pointercancel", padUp);
 Object.entries(PEN).forEach(([c, css]) => {
   const b = document.createElement("button"); b.style.background = css; b.dataset.c = c; b.setAttribute("aria-label", "Pen color");
   b.onclick = () => { pen = +c; [...$("pens").children].forEach(x => x.classList.toggle("on", x === b)); };
@@ -578,38 +583,56 @@ function liveScene() {
   sc.hmove = move.h; sc.vmove = move.v; sc.rot = move.rot; sc.hflip = move.hflip; sc.vflip = move.vflip;
   return sc;
 }
+// ---- Scene sender: newest scene wins, never queues behind a busy link (~20 Hz max) ----
+const posPct = b => Math.round(Math.sin(2 * Math.PI * b / 128) * 100);   // circular position byte -> -100..100
+let lastDrawAt = 0;
 setInterval(async () => {
-  if (sending || !tx) return;
-  const live = false;
-  if (!live && !pending) return;
-  let sc = live ? liveScene() : { ...pending }; pending = null;
-  // Joystick AIMS the show: it offsets whatever is playing (adds to the live motion).
-  if (motion.x !== null) sc.hmove = posByte(motion.x * H_RANGE);
-  if (motion.y !== null) sc.vmove = posByte(Math.max(-.3, motion.y));   // safety: limited downward aim
-  if (live) { const key = JSON.stringify(sc); if (key === lastSentKey && now() - lastSentAt < 1500) return; lastSentKey = key; lastSentAt = now(); }
-  if (motion.spin !== null) sc.rot = spinByte(motion.spin);             // laser's own spin speed
+  if (txBusy || !tx || !pending || !settings) return;
+  const sc = { ...pending }; pending = null;
+  // Manual overrides (joystick aims, spin dial) win over the show for their axes only.
+  if (motion.x !== null) sc.hmove = posByte(-motion.x * H_RANGE);        // verified: 12 = left, 116 = right
+  if (motion.y !== null) sc.vmove = posByte(Math.max(-.3, motion.y));      // safety: limited downward aim
+  if (motion.spin !== null) sc.rot = spinByte(motion.spin);
   if (motion.angle !== null) sc.rot = motion.angle;
-  sending = true;
   try {
-    if (!inProgram) {
-      const p = new Uint8Array(settings); p[0] = 7;
-      if (["rave", "mix", "party"].includes(chase)) { p[8] = 255; if (p[9] < 128) p[9] = 170; }   // laser SOUND mode ON + sensitivity
-      await fastWrite("C0C1C2C3" + hex(p) + "C4C5C6C7"); inProgram = true;
+    if (sc.draw) {                                     // drawn shapes (smooth circles): big frames, max ~4 Hz
+      if (performance.now() - lastDrawAt < 240) { pending = pending || sc; return; }
+      lastDrawAt = performance.now();
+      inProgram = false;
+      await write(drawFrameCfg(sc.draw, sc));
+    } else {
+      if (!inProgram) { const p = new Uint8Array(settings); p[0] = 7; await write("C0C1C2C3" + hex(p) + "C4C5C6C7"); inProgram = true; }
+      await write(sceneFrame(sc));
     }
-    await fastWrite(sceneFrame(sc));
-    telemetry = {
-      x: sc.hmove >= 128 ? "sweep " + Math.round((sc.hmove - 128) / 1.27) + "%" : Math.round((sc.hmove / 127 * 2 - 1) * 100),
-      y: sc.vmove >= 128 ? "sweep " + Math.round((sc.vmove - 128) / 1.27) + "%" : Math.round((sc.vmove / 127 * 2 - 1) * 100),
-      spin: sc.rot >= 192 ? "-" + Math.round((sc.rot - 192) / .63) + "%" : sc.rot >= 128 ? "+" + Math.round((sc.rot - 128) / .63) + "%" : "angle " + Math.round(sc.rot / 128 * 360) + "°",
-    };
-    $("telemetry").textContent = `X ${telemetry.x} · Y ${telemetry.y} · Spin ${telemetry.spin}`;
+    const ax = v => v >= 128 ? "sweep " + Math.round((v - 128) / 1.27) + "%" : v ? posPct(v) : "centre";
+    const sp = sc.rot >= 192 ? "CCW " + Math.round((sc.rot - 192) / .63) + "%" : sc.rot >= 128 ? "CW " + Math.round((sc.rot - 128) / .63) + "%" : "off";
+    $("telemetry").textContent = `X ${ax(sc.hmove)} · Y ${ax(sc.vmove)} · Spin ${sp} · Size ${Math.round((sc.size ?? 255) / 2.55)}%`;
   } catch {}
-  sending = false;
 }, 50);
-function sendFrame(frame) {            // non-scene frames (built-in animations, drawings) leave Program mode
-  if (sending || !tx) return;
-  inProgram = false; sending = true;
-  fastWrite(frame).catch(() => {}).finally(() => sending = false);
+function sendFrame(frame) {            // one-off non-scene frames (drawings, blackout) leave Program mode
+  if (!tx) return;
+  inProgram = false;
+  write(frame).catch(() => {});
+}
+// Draw frame WITH the 13 scene control bytes (verified: drawn shapes take sweep/spin/size like scenes).
+function drawFrameCfg(pts, sc) {
+  const c = [0, 0, 0, sc.flow || 0, sc.size ?? 255, 0, sc.rot || 0, sc.hflip || 0, sc.vflip || 0, sc.hmove || 0, sc.vmove || 0, sc.wave || 0, 0];
+  const cfg = c.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("") + "0000" + "00";
+  const body = pts.map(([x, y, col, f]) => smv(x) + smv(y) + ((col << 4) | (f & 15)).toString(16).padStart(2, "0")).join("");
+  return ("F0F1F2F3" + cfg + smv(pts.length) + body + "F4F5F6F7").toUpperCase();
+}
+// Smooth rings (tested: 120-pt drawn circle = smooth; the laser's own circle pattern renders as a dotted hexagon).
+function rings(n, colors) {
+  const pts = [], per = n === 1 ? 96 : 64;
+  for (let r = 0; r < n; r++) {
+    const R = 320 * (1 - r * .38), col = colors[r % colors.length];
+    for (let k = 0; k <= per; k++) {
+      const a = 2 * Math.PI * k / per, x = R * Math.cos(a), y = R * Math.sin(a);
+      if (k === 0) pts.push([x, y, 0, 1]);
+      pts.push([x, y, col, k === per ? 1 : 0]);
+    }
+  }
+  return pts;
 }
 
 // ---- Manual deck ----
@@ -635,19 +658,19 @@ function aimGlobal(x, y) {
   (async () => {
     while (aimNext) {
       const [ax, ay] = aimNext; aimNext = null;
-      const base = settings.slice(53, 59);
-      const b = v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
-      const body = ("FF" + b(base[0]) + b(base[1]) + b(base[2] + ax * 100) + b(base[3]) + b(base[4] - ay * 100) + b(base[5])).padEnd(32, "0");
+      // Verified on the lasers: X coarse 0 = home, up to 100 shifts the show; values past that blank the output.
+      const b = v => Math.max(0, Math.min(100, Math.round(v))).toString(16).padStart(2, "0");
+      const body = ("FF" + "00" + "00" + b(Math.max(0, ax) * 100) + "00" + b(Math.max(0, ay) * 100) + "00").padEnd(32, "0");
       try { await fastWrite(("10111213" + body + "14151617").toUpperCase()); } catch {}
-      $("telemetry").textContent = `Aim X ${Math.round(ax * 100)} · Y ${Math.round(ay * 100)} (whole show)`;
+      $("telemetry").textContent = `Aim (whole show) X ${Math.round(Math.max(0, ax) * 100)} · Y ${Math.round(Math.max(0, ay) * 100)} — this mode shifts one way only`;
       await new Promise(r => setTimeout(r, 50));
     }
     aimBusy = false;
   })();
 }
 function onJoy() {
-  if (chase) { if (!look) ensureMotionScene(); }        // live show: the 20 Hz loop applies the offset
-  else aimGlobal(motion.x ?? 0, motion.y ?? 0);          // built-in modes: shift the whole output
+  if (chase && !micShow()) { if (!pending && !chase) ensureMotionScene(); }   // Program shows: the sender applies the offset
+  else aimGlobal(motion.x ?? 0, motion.y ?? 0);          // built-in + lasers'-mic shows: shift the whole output
 }
 function ensureMotionScene() {
   if (!chase) { const sc = lastScene ? { ...lastScene } : baseScene(); const t = performance.now();
@@ -662,16 +685,17 @@ function joyXY(e) {
   return [x, y];
 }
 let joyDown = false;
-$("joy").onpointerdown = e => { if (!tx) return status("Connect first.", true); joyDown = true; $("joy").setPointerCapture(e.pointerId); [motion.x, motion.y] = joyXY(e); drawJoy(); onJoy(); };
-$("joy").onpointermove = e => { if (!joyDown) return; [motion.x, motion.y] = joyXY(e); drawJoy(); onJoy(); };
-$("joy").onpointerup = $("joy").onpointercancel = () => {
+$("joy").addEventListener("pointerdown", e => { if (!tx) return status("Connect first.", true); joyDown = true; $("joy").setPointerCapture(e.pointerId); [motion.x, motion.y] = joyXY(e); drawJoy(); onJoy(); });
+$("joy").addEventListener("pointermove", e => { if (!joyDown) return; [motion.x, motion.y] = joyXY(e); drawJoy(); onJoy(); });
+const joyUp = () => {
   joyDown = false;
   if (motion.spring) {
     motion.x = 0; motion.y = 0; onJoy();                       // aim back to centre...
-    if (motion.auto) setTimeout(() => { if (!joyDown) { motion.x = null; motion.y = null; drawJoy(); } }, 400);  // ...then the show owns motion again
+    if (motion.auto) setTimeout(() => { if (!joyDown) { motion.x = null; motion.y = null; drawJoy(); if (!chase || micShow()) aimGlobal(0, 0); } }, 400);  // ...then the show owns motion again
   }
   drawJoy();
 };
+$("joy").addEventListener("pointerup", joyUp); $("joy").addEventListener("pointercancel", joyUp);
 $("springBtn").onclick = () => { motion.spring = !motion.spring; $("springBtn").classList.toggle("on", motion.spring); $("springBtn").textContent = motion.spring ? "Spring to center" : "Hold position"; };
 $("autoBtn").onclick = () => {
   motion.auto = !motion.auto;
@@ -687,12 +711,18 @@ $("spin").onchange = () => { if (motion.auto) { motion.spin = null; $("spin").va
 $("burst").onclick = () => {
   if (!tx) return status("Connect first.", true);
   live.burstDir = pick([-1, 1]); live.burstUntil = performance.now() + 1500;
-  if (!chase) { ensureMotionScene(); setTimeout(ensureMotionScene, 1550); } status("Spin burst");
+  if (micShow()) { const sc = baseScene(); sc.graph = 4 * 39; sc.color = C.white; sc.rot = live.burstDir > 0 ? 191 : 255; sc.hmove = 230; sc.vmove = 200;
+    sendScene(sc); setTimeout(resendMic, 1500); }
+  else if (!chase) { ensureMotionScene(); setTimeout(ensureMotionScene, 1550); }
+  status("Spin burst");
 };
 $("flip180").onclick = () => {
   if (!tx) return status("Connect first.", true);
   live.flipUntil = performance.now() + 900;
-  if (!chase) { ensureMotionScene(); setTimeout(ensureMotionScene, 950); } status("Flip");
+  if (micShow()) { const sc = baseScene(); sc.graph = 4 * 25; sc.color = C.cyan; sc.hflip = 255; sc.vflip = 200;
+    sendScene(sc); setTimeout(resendMic, 900); }
+  else if (!chase) { ensureMotionScene(); setTimeout(ensureMotionScene, 950); }
+  status("Flip");
 };
 drawJoy();
 
@@ -727,38 +757,43 @@ const PAL_FOR = {
 
 // --- Formations: the visual primitives, expressed in verified controls.
 // m = motion targets (0..1 speeds; rot sign = direction), vpos = parked vertical position (-1..1, + = up).
+// Pattern numbers from the laser's own table (app "mg" list, ilda2 model; scene value = 4 x number),
+// checked against the user's tests: 0 solid line, 12 dotted line, 25 rays, 37 star, 50 stairs, 62 = nothing.
+// Line table: 0 horizontal, 1 diagonal, 4 V, 6 twin lines, 16 vertical, 18 vertical bars, 21 three-way,
+//             22 cross, 23 X, 25 five rays, 39 eight-ray burst, 12/17 dotted lines.
 const F = {
-  fan:      { label: "Fan",          groups: [G.line], dens: 2, m: { h: .55 } },
-  wideFan:  { label: "Wide fan",     groups: [G.line], dens: 1, m: { h: .35 }, faceOn: true },
-  rotFan:   { label: "Rotating fan", groups: [G.line], dens: 2, m: { h: .25, rot: .45 } },
-  sheet:    { label: "Sheet",        groups: [G.line], dens: 1, m: { v: .5 }, flow: 0 },
-  sky:      { label: "Liquid sky",   groups: [G.line], dens: 1, m: { h: .3 }, vpos: .75, flow: 15, wave: 130 },
-  cross:    { label: "Crossing sheets", groups: [G.line], dens: 3, m: { h: .75, v: .6 } },
-  xform:    { label: "X formation",  groups: [G.line], dens: 3, m: { h: .9, v: .9, hflip: .7 } },
-  tunnel:   { label: "Tunnel",       groups: [G.arc],  dens: 2, m: { rot: .55, v: .25 } },
-  tunnelX:  { label: "Tunnel burst", groups: [G.arc],  dens: 3, m: { rot: .95, h: .5, v: .5 } },
-  rays:     { label: "Ray array",    groups: [G.line], dotted: true, dens: 2, m: { h: .6, v: .3 } },
-  raysDense:{ label: "Dense rays",   groups: [G.bright], dens: 3, m: { h: .85, v: .7, rot: .4 } },
-  wave:     { label: "Figure-8 wave",groups: [G.line], dens: 1, m: { h: .35, v: .55 }, wave: 110 },
-  roll:     { label: "3D roll",      groups: [G.line], dens: 2, m: { hflip: .6, v: .35 } },
-  anim:     { label: "Animation",    groups: G.anims, dens: 1, m: { h: .2, v: .25 } },
+  fan:      { label: "Fan",             groups: [G.line], pats: [25, 39, 21], dens: 2, m: { h: .55 } },
+  wideFan:  { label: "Wide fan",        groups: [G.line], pats: [39, 25],     dens: 1, m: { h: .35 }, faceOn: true },
+  rotFan:   { label: "Rotating fan",    groups: [G.line], pats: [25, 21, 39], dens: 2, m: { h: .25, rot: .45 } },
+  sheet:    { label: "Sheet",           groups: [G.line], pats: [0, 16, 18],  dens: 1, m: { v: .5 }, flow: 0 },
+  sky:      { label: "Liquid sky",      groups: [G.line], pats: [0, 18, 6],   dens: 1, m: { h: .3 }, vpos: .75, flow: 15, wave: 130 },
+  cross:    { label: "Crossing sheets", groups: [G.line], pats: [22, 23],     dens: 3, m: { h: .75, v: .6 } },
+  xform:    { label: "X formation",     groups: [G.line], pats: [23, 39],     dens: 3, m: { h: .9, v: .9, hflip: .7 } },
+  tunnel:   { label: "Tunnel",          drawn: 2, dens: 2, m: { rot: .55, v: .25 } },
+  tunnelX:  { label: "Tunnel burst",    drawn: 3, dens: 3, m: { rot: .95, h: .5, v: .5 } },
+  circle:   { label: "Circle",          drawn: 1, dens: 1, m: { h: .45, v: .35 } },
+  rays:     { label: "Ray array",       groups: [G.line], pats: [12, 17],     dens: 2, m: { h: .6, v: .3 } },
+  raysDense:{ label: "Dense rays",      groups: [G.line], pats: [17, 12, 39], dens: 3, m: { h: .85, v: .7, rot: .4 } },
+  wave:     { label: "Figure-8 wave",   groups: [G.line], pats: [0, 6],       dens: 1, m: { h: .35, v: .55 }, wave: 110 },
+  roll:     { label: "3D roll",         groups: [G.line], pats: [0, 22],      dens: 2, m: { hflip: .6, v: .35 } },
+  anim:     { label: "Animation",       groups: G.anims, dens: 1, m: { h: .2, v: .25 } },
 };
 // What a formation may become (coherent transitions, not a random picker).
 const NEXT = {
   fan: ["rotFan", "cross", "tunnel", "wideFan", "xform"], wideFan: ["fan", "sky", "sheet", "rotFan"],
   rotFan: ["tunnel", "fan", "cross", "raysDense"], sheet: ["cross", "sky", "wideFan", "roll"],
   sky: ["wideFan", "sheet", "wave"], cross: ["xform", "fan", "sheet", "rays"],
-  xform: ["tunnelX", "cross", "raysDense", "fan"], tunnel: ["tunnelX", "rotFan", "rays", "wave"],
+  xform: ["tunnelX", "cross", "raysDense", "fan"], tunnel: ["tunnelX", "rotFan", "circle", "wave"], circle: ["tunnel", "wave", "sky", "fan"],
   tunnelX: ["xform", "raysDense", "tunnel"], rays: ["raysDense", "fan", "cross", "wave"],
   raysDense: ["xform", "tunnelX", "rays"], wave: ["sky", "wideFan", "tunnel", "roll"],
   roll: ["sheet", "wave", "cross"], anim: ["wave", "sky", "fan", "tunnel"],
 };
 // Which formations suit each section, with weights.
 const SUIT = {
-  breakdown: { sky: 3, wave: 3, wideFan: 2, sheet: 2, roll: 1, tunnel: 1 },
+  breakdown: { sky: 3, wave: 3, wideFan: 2, sheet: 2, roll: 1, tunnel: 1, circle: 2 },
   build:     { fan: 2, rotFan: 3, tunnel: 3, rays: 2, cross: 1 },
   drop:      { xform: 3, tunnelX: 3, raysDense: 3, cross: 2, fan: 1, rotFan: 1 },
-  club:      { sky: 3, wideFan: 3, sheet: 2, wave: 2, fan: 2, tunnel: 1, cross: 1, roll: 1 },
+  club:      { sky: 3, wideFan: 3, sheet: 2, wave: 2, fan: 2, tunnel: 2, circle: 2, cross: 1, roll: 1 },
 };
 
 // --- Expansion / contraction layer (size 0-255, verified live). Values are 0..1 of full size.
@@ -788,7 +823,7 @@ function expansionNow() {
   return Math.max(.12, Math.min(1, v));
 }
 // 10 Hz expansion refresh between beats (looks + motion stay as chosen on the beat).
-setInterval(() => { if (chase && show.form && tx && !sending) queueScene(buildScene()); }, 100);
+setInterval(() => { if (chase && show.form && tx && !txBusy && !micShow()) queueScene(buildScene()); }, 100);
 
 // --- Show state
 const show = {
@@ -825,7 +860,8 @@ function nextSection() {
 }
 function newFormation(sectionChange) {
   const suit = { ...SUIT[chase === "club" ? "club" : show.sec.name] };
-  if (chase === "mix" || (chase === "anim")) suit.anim = chase === "anim" ? 6 : 2;
+  if (chase === "mix") suit.anim = 2;
+  if (chase === "anim") { for (const k in suit) delete suit[k]; suit.anim = 1; }   // ANIMATIONS = animations only
   // Prefer coherent transitions from the current formation, avoid recent ones.
   const from = NEXT[show.form] || [];
   const opts = {};
@@ -833,8 +869,8 @@ function newFormation(sectionChange) {
   show.form = weighted(opts, show.history.slice(-3));
   show.history.push(show.form);
   const f0 = F[show.form];
-  show.graph = f0.groups[0] === G.line ? pick(f0.dotted ? [50] : [0, 150, 200]) : Math.round(rnd(0, 200));
-  show.exp = f0.groups[0] === G.arc ? (show.sec.name === "drop" ? "tunnelX" : "tunnel")
+  show.graph = f0.pats ? 4 * pick(f0.pats) : Math.round(rnd(0, 250));
+  show.exp = f0.drawn ? (show.sec.name === "drop" ? "tunnelX" : "tunnel")
            : pick(EXP_FOR[f0.exp || (chase === "club" ? "club" : show.sec.name)]);
   show.expT0 = performance.now();
   show.colIdx = 0;
@@ -858,12 +894,12 @@ const live = { speed: 1, color: null, burstUntil: 0, flipUntil: 0, level: 0 };
 function buildScene() {
   const f = F[show.form], pal = PALETTES[show.pal];
   const sc = baseScene();
-  sc.group = f.groups[show.graph % f.groups.length];
+  sc.group = f.groups ? f.groups[Math.floor(show.graph / 7) % f.groups.length] : G.line;
   sc.graph = show.graph;
   sc.color = pal.split && show.colIdx % 2 === 0 ? C.seg2 : pal.cols[show.colIdx % pal.cols.length];
   sc.flow = f.flow ?? (sectionEnergy() > .6 ? 100 : 40);
   const L = show.layers || new Set();
-  const target = (L.has("expand") || f.groups[0] === G.arc) ? expansionNow() : 1;
+  const target = (L.has("expand") || f.drawn) ? expansionNow() : 1;
   show.sizeNow = show.sizeNow == null ? target : show.sizeNow + (target - show.sizeNow) * (show.exp === "kick" || show.exp === "snap" ? .6 : .3);
   sc.size = Math.round(255 * show.sizeNow);
   sc.wave = L.has("wave") ? (f.wave || 120) : (f.wave && show.sec.name !== "drop" ? f.wave : 0);
@@ -883,6 +919,11 @@ function buildScene() {
   const t = performance.now();
   if (t < live.burstUntil) sc.rot = live.burstDir > 0 ? 191 : 255;
   if (t < live.flipUntil) sc.hflip = 255;
+  if (f.drawn) {                                   // smooth drawn rings in the palette's laser colours
+    const toIdx = c => ({ [C.red]: 1, [C.green]: 2, [C.blue]: 3, [C.yellow]: 4, [C.cyan]: 5, [C.pink]: 6, [C.white]: 7 })[c] || 5;
+    const cols = live.color !== null ? [toIdx(live.color)] : pal.cols.map(toIdx);
+    sc.draw = rings(f.drawn, show.colIdx % 2 ? [...cols].reverse() : cols);
+  }
   return sc;
 }
 
@@ -899,10 +940,47 @@ function layerShuffle(S) {
   }
   show.layerHist.push(best);
   show.layers = new Set(best.split(","));
-  if (show.layers.has("expand") && F[show.form].groups[0] !== G.arc && Math.random() < .6) { show.exp = pick(EXP_FOR[chase === "club" ? "club" : S]); show.expT0 = performance.now(); }
+  if (show.layers.has("expand") && !F[show.form].drawn && Math.random() < .6) { show.exp = pick(EXP_FOR[chase === "club" ? "club" : S]); show.expT0 = performance.now(); }
   if (show.layers.has("spin")) { show.spinSign *= -1; show.tgt.rot = show.spinSign * (S === "drop" ? rnd(.75, 1) : rnd(.55, .8)); }
   if (show.layers.has("roll")) show.tgt.hflip = Math.max(show.tgt.hflip, rnd(.65, 1));
   if (show.layers.has("flip3d")) show.tgt.vflip = rnd(.6, 1); else show.tgt.vflip = 0;
+}
+
+// ===== LASER-MIC SHOWS =====
+// Verified: the lasers' OWN microphone drives the built-in pattern modes with SOUND on (stomps/loud music
+// trigger it), but NOT Program mode. So RAVE / Rave+Anim / Party drops run in built-in modes on the lasers' mic,
+// and the page only curates which patterns, group and colour play (one write per phrase).
+const MIC_SETS = {
+  beams: { label: "Laser beams", group: 2, pick: LINE_BEAMS },
+  dense: { label: "Dense rays",  group: 6, pick: MULTI_BEAMS },
+  fans:  { label: "Fans & dots", group: 6, pick: RAVE_BEAMS },
+  anim:  { label: "Animations",  group: 3, pick: ANIMS },
+};
+const MIC_COLORS = [8, 9, 1, 3, 5, 6, 2, 7];      // C0 colour codes: jump, RGB, red, blue, cyan, magenta, green, white
+let micSet = "beams", micColor = 8;
+function micShow() { return chase === "rave" || chase === "mix" || (chase === "party" && show.sec.name === "drop"); }
+function micFrame() {
+  const set = MIC_SETS[micSet], s = new Uint8Array(settings), save = settings;
+  settings = s; s[0] = set.group; pickPatterns(set.group, pickN(set.pick, 10));
+  s[2] = live.c0 ?? micColor; s[5] = Math.round(255 * Math.min(1, live.speed)); s[8] = 255; s[9] = live.sensByte ?? 255;
+  settings = save;
+  return "C0C1C2C3" + hex(s) + "C4C5C6C7";
+}
+function micStep(t, inBar, bar) {
+  const every = show.sec.name === "drop" ? 2 : 4;
+  if (t === 0 || micFresh || (inBar === 0 && bar % every === 0)) {
+    micFresh = false;
+    const opts = chase === "mix" ? ["beams", "anim", "dense", "anim"] : ["beams", "dense", "fans"];
+    micSet = pick(opts.filter(o => o !== micSet)); micColor = pick(MIC_COLORS.filter(c => c !== micColor));
+    sendFrame(micFrame());
+    status((SHOWS[chase] ? SHOWS[chase].label : "") + " · lasers' own mic · " + MIC_SETS[micSet].label);
+  }
+}
+let micFresh = false;
+function resendMic() { if (micShow()) sendFrame(micFrame()); }
+function sendScene(sc) {                      // one-off Program scene (motion accents in mic shows)
+  const p = new Uint8Array(settings); p[0] = 7;
+  write("C0C1C2C3" + hex(p) + "C4C5C6C7").then(() => write(sceneFrame(sc))).catch(() => {});
 }
 
 function chaseStep() {
@@ -912,6 +990,9 @@ function chaseStep() {
                  if (chase === "party") nextSection(); else { show.pal = pick(PAL_FOR[chase === "club" ? "club" : "build"]); newFormation(true); } }
   else if (inBar === 0 && --show.sec.left <= 0) nextSection();
   const S = show.sec.name, e = sectionEnergy(), prog = 1 - show.sec.left / show.sec.total;
+  if (micShow()) { show.wasMic = true; return micStep(t, inBar, bar); }
+  if (chase === "party" && inBar === 0 && show.wasMic) { show.wasMic = false; inProgram = false; }
+  show.wasMic = false;
 
   // Phrases: formations evolve on phrase boundaries, not every beat.
   const phraseBars = chase === "club" ? (S === "drop" ? 2 : 4) : S === "drop" ? pick([1, 2]) : 2;
@@ -936,10 +1017,10 @@ function chaseStep() {
     } else if (S === "drop") {
       show.colIdx++;                                                           // colour accent every beat
       if (Math.random() < .5) { show.spinSign *= -1; show.tgt.rot = show.spinSign * Math.max(.5, Math.abs(show.tgt.rot)); show.m.rot = show.tgt.rot; } // spin reversal on the kick
-      if (isSnare && Math.random() < .4) show.graph = pick([0, 150, 200].filter(g => g !== show.graph)); // snare: pattern snap
+      if (isSnare && Math.random() < .4) { const ps = F[show.form].pats; if (ps) show.graph = 4 * pick(ps); } // snare: pattern snap
     } else if (S === "build") {
       if (inBar % 4 === 0 || prog > .6) show.colIdx++;
-      if (prog > .75 && inBar % 4 === 0) show.graph = pick([0, 150, 200]);
+      if (prog > .75 && inBar % 4 === 0 && F[show.form].pats) show.graph = 4 * pick(F[show.form].pats);
     }
   }
   queueScene(buildScene());
@@ -1045,21 +1126,22 @@ document.querySelectorAll(".show").forEach(b => b.onclick = async () => {
     active = b.dataset.show;
   }, s.label + " is playing." + (s.chase ? " Keep this page open." : ""));
   if (s.chase && active === b.dataset.show && settings) startChase(s.chase);
-  if (b.dataset.show === "rave") ensureMic();            // RAVE = sound ON: laser mic + phone beat sync
+  if (s.chase) micFresh = true;
 });
 $("speed").oninput = e => $("speedVal").textContent = e.target.value + "%";
-$("speed").onchange = e => chase ? (live.speed = +e.target.value / 100, status("Show speed " + e.target.value + "%")) : apply(() => settings[5] = raw(+e.target.value), "Speed set to " + e.target.value + "%.");
+$("speed").onchange = e => chase ? (live.speed = +e.target.value / 100, resendMic(), status("Show speed " + e.target.value + "%")) : apply(() => settings[5] = raw(+e.target.value), "Speed set to " + e.target.value + "%.");
 $("sens").oninput = e => $("sensVal").textContent = e.target.value + "%";
-$("sens").onchange = e => chase ? (live.sens = +e.target.value / 100, status("Mic sensitivity " + e.target.value + "%")) : apply(() => settings[9] = raw(+e.target.value), "Sensitivity set to " + e.target.value + "%.");
+$("sens").onchange = e => chase ? (live.sens = +e.target.value / 100, live.sensByte = raw(+e.target.value), resendMic(), status("Sound sensitivity " + e.target.value + "%")) : apply(() => settings[9] = raw(+e.target.value), "Sensitivity set to " + e.target.value + "%.");
 COLORS.forEach(([c, bg, name]) => {
   const b = document.createElement("button");
   b.dataset.c = c; b.title = name; b.setAttribute("aria-label", name); b.style.background = bg;
   b.onclick = () => {
     if (!chase) return apply(() => settings[2] = c, "Color: " + name + ".");
     const lc = { 1: C.red, 2: C.green, 3: C.blue, 4: C.yellow, 5: C.cyan, 6: C.pink, 7: C.white, 8: null, 9: C.rainbow }[c];
-    live.color = live.color === lc ? null : lc;
-    [...$("colors").children].forEach(x => x.classList.toggle("on", x === b && live.color !== null));
-    status(live.color === null ? "Colors back to the show" : "Color locked: " + name + " (tap again to release)");
+    const same = live.color === lc && live.c0 === c;
+    live.color = same ? null : lc; live.c0 = same ? null : c; resendMic();
+    [...$("colors").children].forEach(x => x.classList.toggle("on", x === b && live.c0 !== null));
+    status(live.c0 === null ? "Colors back to the show" : "Color locked: " + name + " (tap again to release)");
   };
   $("colors").appendChild(b);
 });
