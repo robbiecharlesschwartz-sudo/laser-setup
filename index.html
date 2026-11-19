@@ -27,6 +27,8 @@
   .hide { display:none; }
   ol { padding-left:20px; color:var(--dim); font-size:14px; margin:0; }
   ol li { margin:4px 0; }
+  button.big { padding:20px; font-size:18px; letter-spacing:.5px; }
+  .hint { color:var(--dim); font-size:13px; margin:10px 0 0; }
   .row { display:flex; justify-content:space-between; font-size:13px; color:var(--dim); }
 </style>
 </head>
@@ -52,6 +54,17 @@
     <div style="height:12px"></div>
     <button class="primary" id="connect">Connect to laser</button>
     <div id="status"></div>
+  </div>
+
+  <div class="card hide" id="presets">
+    <label style="margin-top:0">One-tap presets (saves instantly)</label>
+    <button class="primary big" id="pRave">RAVE &mdash; beams &amp; dots to the music</button>
+    <div style="height:8px"></div>
+    <div class="seg">
+      <button id="pLines">Laser lines</button>
+      <button id="pAll">All patterns</button>
+    </div>
+    <p class="hint">All presets switch on SOUND mode, so the lasers change on the beat. Rave and Laser lines play only straight lines and dots: no shapes, no animations. Best in haze.</p>
   </div>
 
   <div class="card hide" id="controls">
@@ -141,12 +154,12 @@ $("connect").onclick = async () => {
     rx.addEventListener("characteristicvaluechanged", e => rxHex += hex(e.target.value.buffer));
     await rx.startNotifications();
     dev.addEventListener("gattserverdisconnected", () => {
-      $("controls").classList.add("hide"); $("connect").disabled = false; status("Disconnected. Swap lasers and connect again.");
+      $("controls").classList.add("hide"); $("presets").classList.add("hide"); $("connect").disabled = false; status("Disconnected. Swap lasers and connect again.");
     });
     status("Reading laser settings…");
     settings = await readSettings();
     render();
-    $("controls").classList.remove("hide"); $("connect").disabled = true;
+    $("controls").classList.remove("hide"); $("presets").classList.remove("hide"); $("connect").disabled = true;
     status("Connected. Current mode: " + (settings[8] === 255 ? "SOUND" : "AUTO"));
   } catch (e) { status(e.message, true); }
 };
@@ -160,6 +173,53 @@ $("save").onclick = async () => {
     status("Saved. Laser is in " + (settings[8] === 255 ? "SOUND" : "AUTO") + " mode.");
   } catch (e) { status(e.message, true); }
 };
+
+// ---- Presets ----
+// Settings block bytes (0-based): 0 mode, 2 color, 5 speed, 8 SOUND/AUTO, 9 sensitivity.
+// Pattern groups 2 (Line), 3 (Animation), 5 (Christmas), 6 (Outdoor) each take 9 bytes from byte 16:
+//   [play mode: 0 = loop all, 0x80 = only ticked] [64 tick bits as words 3,2,1,0, big-endian].
+const GROUP_OFFSET = { 2: 16, 3: 25, 5: 34, 6: 43 };
+const SHAPES_IN_OUTDOOR = [11, 19, 24, 29, 32, 40, 57, 58];          // circles, squares, triangle
+const OUTDOOR_BEAMS = [...Array(64).keys()].map(i => i + 1).filter(n => !SHAPES_IN_OUTDOOR.includes(n));
+const LINE_BEAMS = [1, 3, 4, 5, 8, 10, 20, 21, 24, 25, 28, 34, 36, 39, 41, 42, 43, 44, 45, 46, 48, 49, 52, 56, 60];
+
+function pickPatterns(group, patterns) {
+  const words = [0, 0, 0, 0];
+  patterns.forEach(n => { words[Math.floor((n - 1) / 16)] |= 1 << ((n - 1) % 16); });
+  const o = GROUP_OFFSET[group];
+  settings[o] = patterns ? 0x80 : 0;
+  [3, 2, 1, 0].forEach((w, k) => { settings[o + 1 + 2 * k] = words[w] >> 8; settings[o + 2 + 2 * k] = words[w] & 255; });
+}
+
+async function applyPreset(name, fn) {
+  try {
+    fn();
+    render();
+    status("Sending " + name + "…");
+    await write("C0C1C2C3" + hex(settings) + "C4C5C6C7");
+    settings = await readSettings();
+    render();
+    status(name + " is on. (Resets to the back-panel mode after power-off.)");
+  } catch (e) { status(e.message, true); }
+}
+
+$("pRave").onclick = () => applyPreset("RAVE", () => {
+  settings[0] = 6;                              // Outdoor group: lines + dots
+  pickPatterns(6, OUTDOOR_BEAMS);
+  settings[2] = 8;                              // color: Jump
+  settings[8] = 255;                            // SOUND
+  if (settings[9] < 128) settings[9] = 160;     // sensitivity at least ~63%
+});
+$("pLines").onclick = () => applyPreset("Laser lines", () => {
+  settings[0] = 2;                              // Line group, line patterns only
+  pickPatterns(2, LINE_BEAMS);
+  settings[2] = 9;                              // full RGB
+  settings[8] = 255;
+});
+$("pAll").onclick = () => applyPreset("All patterns", () => {
+  settings[0] = 1;                              // Random: everything
+  settings[8] = 255;
+});
 
 $("disconnect").onclick = () => dev && dev.gatt.connected && dev.gatt.disconnect();
 </script>
