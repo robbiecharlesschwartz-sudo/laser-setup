@@ -1042,6 +1042,7 @@ function buildScene() {
   if (mic) sc.size = Math.round(sc.size * (.35 + .65 * lv));
   const k = live.speed * (mic ? (.6 + .4 * lv) : 1);
   for (const key of ["hmove", "vmove", "hflip", "vflip"]) if (sc[key] >= 128) sc[key] = 128 + Math.round((sc[key] - 128) * k);
+  if (chase === "club") for (const key of ["hmove", "vmove"]) if (sc[key] > 202) sc[key] = 202;   // CLUB hard ceiling: never frantic
   if (live.color !== null) sc.color = live.color;
   const t = performance.now();
   if (t < live.burstUntil) sc.rot = live.burstDir > 0 ? 191 : 255;
