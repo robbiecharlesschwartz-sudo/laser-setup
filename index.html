@@ -66,13 +66,14 @@
       <button class="show" data-show="club"><b>CLUB</b><span>Fast multi-beams, no sound needed</span></button>
       <button class="show" data-show="lines"><b>LINES</b><span>Straight laser lines on the beat</span></button>
       <button class="show" data-show="classic"><b>CLASSIC</b><span>Every built-in pattern on the beat</span></button>
+      <button class="show wide" data-show="party"><b>PARTY SHOW (pre-made)</b><span>Scripted set on loop: intro, build, drop, breakdown, build, drop. Set the tempo to your music.</span></button>
       <button class="show wide" data-show="mix"><b>RAVE + ANIMATIONS</b><span>Animations and beams trading off, both reacting to the music</span></button>
       <button class="show wide" data-show="anim"><b>ANIMATIONS</b><span>The laser's own animations: chicken, plane, rocket, jet, bat, horse, eagle, dolphin, lion and more, mixed with beam bursts</span></button>
     </div>
     <div id="tempo" hidden>
       <label style="margin-top:14px"><span>Tempo (BPM)</span><span id="bpmVal"></span></label>
       <input type="range" id="bpm" min="90" max="180" step="1" value="128">
-      <p class="note">RAVE, CLUB, RAVE + ANIMATIONS and ANIMATIONS are driven by this page: keep it open with the screen on. Tapping LINES or CLASSIC stops the chase.</p>
+      <p class="note">PARTY SHOW, RAVE, CLUB, RAVE + ANIMATIONS and ANIMATIONS are driven by this page: keep it open with the screen on. Tapping LINES or CLASSIC stops the chase.</p>
     </div>
   </div>
 
@@ -121,6 +122,7 @@ const SHOWS = {
   club:    { label: "CLUB",    group: 6, pick: MULTI_BEAMS, sound: false, color: 8, speed: 255, chase: "club" },
   lines:   { label: "LINES",   group: 2, pick: LINE_BEAMS,  sound: true,  color: 9, speed: 255 },
   classic: { label: "CLASSIC", group: 1, pick: null,        sound: true,  color: 9, speed: 220 },
+  party:   { label: "PARTY SHOW", group: 6, pick: MULTI_BEAMS, sound: false, color: 3, speed: 255, chase: "party" },
   mix:     { label: "RAVE + ANIMATIONS", group: 3, pick: [25], sound: true, color: 9, speed: 255, chase: "mix" },
   anim:    { label: "ANIMATIONS", group: 3, pick: ANIMS_ALL(), sound: false, color: 9, speed: 255, chase: "anim" },
 };
@@ -229,6 +231,33 @@ function animFrame(n, color, sound = false) {
 const pick = a => a[Math.floor(Math.random() * a.length)];
 const pickN = (a, n) => [...a].sort(() => Math.random() - .5).slice(0, n);
 
+// ---------- Pre-made PARTY SHOW ----------
+// Sections in bars (1 bar = 4 beats = 8 ticks). Loops forever.
+const SET = [
+  ["Intro", 8], ["Build", 8], ["DROP", 16], ["Breakdown", 8], ["Build", 4], ["DROP", 16],
+];
+const SET_TICKS = SET.reduce((a, [, b]) => a + b * 8, 0);
+let lastSection = "";
+function partyStep(tick) {
+  let t = tick % SET_TICKS, i = 0;
+  while (t >= SET[i][1] * 8) { t -= SET[i][1] * 8; i++; }
+  const [name, bars] = SET[i], bar = Math.floor(t / 8), pos = t % 8;
+  if (name !== lastSection) { lastSection = name; status("PARTY SHOW: " + name); }
+  const cool = [3, 5, 7, 6], hot = [1, 8, 7, 4, 6, 3, 2, 5];
+  if (name === "Intro") {                          // slow, cool, one multi-beam look per bar
+    if (pos === 0) return beamFrame([pick(MULTI_BEAMS)], cool[bar % cool.length], false);
+  } else if (name === "Build") {                   // speeds up: every beat, then every half beat
+    const fast = bar >= bars / 2;
+    if (fast || pos % 2 === 0) return beamFrame([pick(MULTI_BEAMS)], hot[t % hot.length], false);
+  } else if (name === "DROP") {                    // full rave on the beat; every 4th bar an animation hits
+    if (bar % 4 === 3) { if (pos === 0) return animFrame(ANIMS[Math.floor(tick / 32) % ANIMS.length], hot[bar % hot.length], true); }
+    else return beamFrame(pickN(RAVE_BEAMS, 6), hot[t % hot.length], true);
+  } else if (name === "Breakdown") {               // calm: one animation every 2 bars
+    if (bar % 2 === 0 && pos === 0) return animFrame(ANIMS[Math.floor(tick / 16) % ANIMS.length], cool[(bar / 2) % cool.length], false);
+  }
+  return null;
+}
+
 function chaseStep() {
   const beat = step++;
   const bar = Math.floor(beat / 2) % 16;                 // ticks are half-beats
@@ -241,6 +270,8 @@ function chaseStep() {
     // On the beat: one multi-beam look + color. Bars 7-8: half-beat bursts.
     const burst = bar % 8 >= 6;
     if (burst || beat % 2 === 0) frame = beamFrame([pick(MULTI_BEAMS)], CLUB_COLORS[Math.floor(beat / (burst ? 1 : 2)) % CLUB_COLORS.length], false);
+  } else if (chase === "party") {
+    frame = partyStep(beat);
   } else if (chase === "mix") {
     // Bar = 4 beats: 2 beats animation, 2 beats beams; sound mode on throughout so both react to the music.
     const bar = Math.floor(beat / 8), pos = beat % 8;
@@ -259,7 +290,7 @@ function chaseStep() {
 }
 function startChase(name) {
   stopChase();
-  chase = name; step = 0;
+  chase = name; step = 0; lastSection = "";
   const ms = 60000 / +$("bpm").value / 2;              // half-beat ticks
   chaseTimer = setInterval(chaseStep, ms);
   $("tempo").hidden = false;
