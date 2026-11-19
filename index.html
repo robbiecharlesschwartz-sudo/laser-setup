@@ -26,6 +26,8 @@
   .show.active::after { content:"PLAYING"; position:absolute; top:10px; right:12px; font-size:10px; font-weight:700; color:var(--accent); letter-spacing:.08em; }
   .show.wide { grid-column:1 / -1; min-height:80px; }
   .note { color:var(--dim); font-size:13px; margin:0; }
+  #joy { width:100%; aspect-ratio:1; display:block; touch-action:none; background:#06070a; border-radius:14px; border:1px solid var(--line); }
+  .seg button.on { background:rgba(60,240,160,.15); color:var(--accent); }
   label { display:flex; justify-content:space-between; color:var(--dim); font-size:14px; margin:4px 0 8px; }
   input[type=range] { width:100%; accent-color:var(--accent); margin:0 0 16px; height:28px; }
   .colors { display:grid; grid-template-columns:repeat(9,1fr); gap:6px; }
@@ -74,8 +76,8 @@
   <div class="card">
     <h2>Shows: tap one, it starts right away</h2>
     <div class="shows">
-      <button class="show" data-show="rave"><b>RAVE</b><span>Beams &amp; dots, hits on the beat</span></button>
-      <button class="show" data-show="club"><b>CLUB</b><span>Fast multi-beams, no sound needed</span></button>
+      <button class="show" data-show="rave"><b>RAVE</b><span>Spins, flips, sweeps up/down + side to side, all mixed; hits on the beat</span></button>
+      <button class="show" data-show="club"><b>CLUB</b><span>Groove sweeps on the half-time, spin bursts on the snare</span></button>
       <button class="show" data-show="lines"><b>LINES</b><span>Straight laser lines on the beat</span></button>
       <button class="show" data-show="classic"><b>CLASSIC</b><span>Every built-in pattern on the beat</span></button>
       <button class="show wide" data-show="party"><b>PARTY SHOW (pre-made)</b><span>Scripted set on loop: intro, build, drop, breakdown, build, drop. Set the tempo to your music.</span></button>
@@ -89,6 +91,23 @@
       <button id="micBtn" style="margin-bottom:10px">Sync to the music with the phone mic: OFF</button>
       <p class="note">With mic sync on, the show follows the kick drum instead of the tempo slider. The laser's own sound mode stays on in RAVE too. PARTY SHOW, RAVE, CLUB, RAVE + ANIMATIONS and ANIMATIONS are driven by this page: keep it open with the screen on. Tapping LINES or CLASSIC stops the chase.</p>
     </div>
+  </div>
+
+  <div class="card" id="deck">
+    <h2>Manual motion: grab to take over</h2>
+    <canvas id="joy" width="600" height="600" aria-label="Move joystick: left/right and up/down"></canvas>
+    <div class="seg" style="margin-top:10px">
+      <button id="springBtn" class="on">Spring to center</button>
+      <button id="autoBtn" class="on">Auto motion: ON</button>
+    </div>
+    <label style="margin-top:14px"><span>Spin  (left = counter-clockwise, right = clockwise)</span><span id="spinVal">0</span></label>
+    <input type="range" id="spin" min="-100" max="100" step="1" value="0" list="detent">
+    <datalist id="detent"><option value="0"></option></datalist>
+    <div class="seg">
+      <button id="burst">Spin burst</button>
+      <button id="flip180">180° flip</button>
+    </div>
+    <p class="note" id="telemetry" style="margin-top:12px;font-variant-numeric:tabular-nums">X – · Y – · Spin –</p>
   </div>
 
   <div class="card">
@@ -153,13 +172,13 @@ const LINE_BEAMS  = [1,3,4,5,8,10,20,21,24,25,28,34,36,39,41,42,43,44,45,46,48,4
 
 function ANIMS_ALL() { return [14, 25]; }
 const SHOWS = {
-  rave:    { label: "RAVE",    group: 6, pick: RAVE_BEAMS,  sound: true,  color: 8, speed: 255, chase: "rave" },
-  club:    { label: "CLUB",    group: 6, pick: MULTI_BEAMS, sound: false, color: 8, speed: 255, chase: "club" },
+  rave:    { label: "RAVE",    group: 7, pick: null, sound: true,  color: 8, speed: 255, chase: "rave" },
+  club:    { label: "CLUB",    group: 7, pick: null, sound: false, color: 8, speed: 255, chase: "club" },
   lines:   { label: "LINES",   group: 2, pick: LINE_BEAMS,  sound: true,  color: 9, speed: 255 },
   classic: { label: "CLASSIC", group: 1, pick: null,        sound: true,  color: 9, speed: 220 },
-  party:   { label: "PARTY SHOW", group: 6, pick: MULTI_BEAMS, sound: false, color: 3, speed: 255, chase: "party" },
-  mix:     { label: "RAVE + ANIMATIONS", group: 3, pick: [25], sound: true, color: 9, speed: 255, chase: "mix" },
-  anim:    { label: "ANIMATIONS", group: 3, pick: ANIMS_ALL(), sound: false, color: 9, speed: 255, chase: "anim" },
+  party:   { label: "PARTY SHOW", group: 7, pick: null, sound: true, color: 3, speed: 255, chase: "party" },
+  mix:     { label: "RAVE + ANIMATIONS", group: 7, pick: null, sound: true, color: 9, speed: 255, chase: "mix" },
+  anim:    { label: "ANIMATIONS", group: 7, pick: null, sound: false, color: 9, speed: 255, chase: "anim" },
 };
 
 let dev, tx, rxHex = "", settings = null, active = null, busy = false;
@@ -420,50 +439,211 @@ $("saveDraw").onclick = () => {
   storeMine(l.slice(-12)); renderMine(); status("Added to ANIMATIONS.");
 };
 
-function chaseStep() {
-  const beat = step++;
-  const bar = Math.floor(beat / 2) % 16;                 // ticks are half-beats
-  let frame = null;
-  // Reference: Laserworld nightclub showcase. Dense beam fans / sheets / tunnels,
-  // 1-2 colors per look (red/blue, red/cyan, magenta/white), switching on the beat, white blinder hits at peaks.
-  if (chase === "rave") {
-    // Sound mode ON (laser mic reacts to the music) + page swaps fan & color pair on every beat,
-    // alternating the two colors of the pair on the off-beat. Every 16 beats: 1 bar white/red blinder strobe.
-    const b = Math.floor(beat / 2), off = beat % 2, peak = b % 16 >= 12;
-    const pair = PAIRS[Math.floor(b / 4) % PAIRS.length];
-    if (peak) frame = beamFrame([pick(DENSE)], off ? 7 : 1, true);
-    else frame = beamFrame(off ? lastLook : (lastLook = pickN(DENSE, 3)), pair[off], true);
-  } else if (chase === "club") {
-    // Club: one big look per beat (fan/sheet/tunnel), color pair changes every bar,
-    // last bar of every 4: half-beat build, then a white hit on the 1.
-    const b = Math.floor(beat / 2), off = beat % 2, build = b % 16 >= 12;
-    const pair = PAIRS[Math.floor(b / 4) % PAIRS.length];
-    if (b % 16 === 0 && !off) frame = beamFrame([pick(DENSE)], 7, false);
-    else if (build || !off) frame = beamFrame([pick(DENSE)], pair[(b + off) % 2], false);
-  } else if (chase === "party") {
-    frame = partyStep(beat);
-  } else if (chase === "mix") {
-    // Bar = 4 beats: 2 beats animation, 2 beats beams; sound mode on throughout so both react to the music.
-    const bar = Math.floor(beat / 8), pos = beat % 8;
-    if (pos === 0) frame = animFrame(ANIMS[bar % ANIMS.length], CLUB_COLORS[bar % CLUB_COLORS.length], true);
-    else if (pos >= 4) frame = beamFrame(pickN(RAVE_BEAMS, 6), RAVE_COLORS[beat % RAVE_COLORS.length], true);
-  } else if (chase === "anim") {
-    const list = ANIMS;
-    // 4 beats of one animation, next animation, ... every 4th one is followed by 2 beats of beam bursts.
-    const cycle = Math.floor(beat / 8), pos = beat % 8;
-    if (cycle % 4 === 3) { if (pos % 2 === 0) frame = beamFrame([pick(MULTI_BEAMS)], CLUB_COLORS[beat % CLUB_COLORS.length], false); }
-    else if (pos === 0) {
-      const mine = loadMine(), all = list.length + mine.length, k = (cycle - Math.floor(cycle / 4)) % all;
-      frame = k < list.length ? animFrame(list[k], CLUB_COLORS[cycle % CLUB_COLORS.length]) : drawFrame(strokesToPoints(mine[k - list.length].strokes));
-    }
-  }
-  if (!frame || sending || !tx) return;
+// ================= 3-axis MOTION ENGINE (Program-mode scenes) =================
+// Scene = 13 control bytes (decoded from LightElf "Program" page), all 0-255:
+//  0 pattern within group | 1 group: 0-24 Line, 25-49 Arc, 50-74 Bright dots, 75-99 Dots, 125+ Animations 1-5
+//  2 color: 0 white,10 red,20 blue,30 pink,40 cyan,50 yellow,60 green,70 color change,80 rainbow,93 2-seg,111 3-seg,132 4-seg,150 8-seg,183 16-seg,219 32-seg
+//  3 color flow (0 off, 10-127 fwd, 128+ rev) | 4 size | 5 zoom (0 manual, 16 grow, 56 shrink, 96 pulse)
+//  6 SPIN: 0-127 fixed angle, 128-191 clockwise speed, 192-255 counter-clockwise speed
+//  7 H flip / 8 V flip: 0-127 position, 128-255 flip speed (3D roll)
+//  9 HORIZONTAL MOVE / 10 VERTICAL MOVE: 0-127 position (64 = centre), 128-255 auto sweep speed
+// 11 wave | 12 gradual draw
+const G = { line: 12, arc: 37, bright: 62, dot: 87, anims: [137, 162, 187, 212, 240] };
+const C = { white: 5, red: 15, blue: 25, pink: 35, cyan: 45, yellow: 55, green: 65, change: 75, rainbow: 86, seg2: 100, seg3: 120, seg4: 140, seg8: 165, seg16: 200, seg32: 235 };
+const HOT = ["seg2", "seg4", "seg8", "red", "blue", "cyan", "pink", "rainbow", "seg16"];
+const COOL = ["blue", "cyan", "white", "seg2", "pink"];
+const rnd = (a, b) => a + Math.random() * (b - a);
+const spinByte = v => { if (Math.abs(v) < 0.05) return 0; const s = Math.round(Math.min(1, Math.abs(v)) * 63); return v > 0 ? 128 + s : 192 + s; };
+const sweepByte = v => v <= 0.02 ? 64 : 128 + Math.round(Math.min(1, v) * 127);   // 0 = parked in centre
+const posByte = v => Math.round((Math.max(-1, Math.min(1, v)) + 1) / 2 * 127);    // -1..1 -> 0..127
+function baseScene() {
+  return { graph: rnd(0, 255), group: G.line, color: C.seg4, flow: 60, size: 220, zoom: 0, rot: 0, hflip: 0, vflip: 0, hmove: 64, vmove: 64, wave: 0 };
+}
+function sceneFrame(sc) {
+  const c = [sc.graph, sc.group, sc.color, sc.flow, sc.size, sc.zoom, sc.rot, sc.hflip, sc.vflip, sc.hmove, sc.vmove, sc.wave, 0];
+  const body = (c.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("") + "FA").padEnd(30, "0");
+  return ("D0D1D2D3" + "01" + "00" + body + "00" + "D4D5D6D7").toUpperCase();
+}
+
+// ---- Manual override state (joystick / spin dial) ----
+const motion = { x: null, y: null, spin: null, angle: null, auto: true, spring: true };
+let inProgram = false, lastScene = null, pending = null, telemetry = { x: 0, y: 0, spin: 0 };
+
+// ~20 Hz throttle: only the newest scene is sent; never queues up behind a slow BLE link.
+function queueScene(sc) { lastScene = sc; pending = sc; }
+setInterval(async () => {
+  if (!pending || sending || !tx) return;
+  const sc = { ...pending }; pending = null;
+  if (motion.x !== null) sc.hmove = posByte(motion.x);
+  if (motion.y !== null) sc.vmove = posByte(motion.y);
+  if (motion.spin !== null) sc.rot = spinByte(motion.spin);
+  if (motion.angle !== null) sc.rot = motion.angle;
   sending = true;
+  try {
+    if (!inProgram) { const p = new Uint8Array(settings); p[0] = 7; await fastWrite("C0C1C2C3" + hex(p) + "C4C5C6C7"); inProgram = true; }
+    await fastWrite(sceneFrame(sc));
+    telemetry = {
+      x: sc.hmove >= 128 ? "sweep " + Math.round((sc.hmove - 128) / 1.27) + "%" : Math.round((sc.hmove / 127 * 2 - 1) * 100),
+      y: sc.vmove >= 128 ? "sweep " + Math.round((sc.vmove - 128) / 1.27) + "%" : Math.round((sc.vmove / 127 * 2 - 1) * 100),
+      spin: sc.rot >= 192 ? "-" + Math.round((sc.rot - 192) / .63) + "%" : sc.rot >= 128 ? "+" + Math.round((sc.rot - 128) / .63) + "%" : "angle " + Math.round(sc.rot / 128 * 360) + "°",
+    };
+    $("telemetry").textContent = `X ${telemetry.x} · Y ${telemetry.y} · Spin ${telemetry.spin}`;
+  } catch {}
+  sending = false;
+}, 50);
+function sendFrame(frame) {            // non-scene frames (built-in animations, drawings) leave Program mode
+  if (sending || !tx) return;
+  inProgram = false; sending = true;
   fastWrite(frame).catch(() => {}).finally(() => sending = false);
+}
+
+// ---- Manual deck ----
+function drawJoy(x = motion.x ?? 0, y = motion.y ?? 0, held = motion.x !== null) {
+  const cv = $("joy"), g = cv.getContext("2d"), W = 600, R = 270;
+  g.clearRect(0, 0, W, W);
+  g.strokeStyle = "#252a37"; g.lineWidth = 2;
+  g.beginPath(); g.arc(300, 300, R, 0, Math.PI * 2); g.stroke();
+  g.beginPath(); g.moveTo(30, 300); g.lineTo(570, 300); g.moveTo(300, 30); g.lineTo(300, 570); g.stroke();
+  g.fillStyle = "#8a93a8"; g.font = "22px system-ui"; g.textAlign = "center";
+  g.fillText("UP", 300, 62); g.fillText("DOWN", 300, 556); g.fillText("L", 52, 308); g.fillText("R", 548, 308);
+  g.fillStyle = held ? "#3cf0a0" : "#3a4152";
+  g.beginPath(); g.arc(300 + x * R, 300 - y * R, 46, 0, Math.PI * 2); g.fill();
+}
+function ensureMotionScene() {         // joystick used with no motion show running: run a static beam scene
+  if (!lastScene) queueScene(baseScene()); else queueScene({ ...lastScene });
+}
+function joyXY(e) {
+  const r = $("joy").getBoundingClientRect();
+  let x = ((e.clientX - r.left) / r.width * 2 - 1) / 0.9, y = -((e.clientY - r.top) / r.height * 2 - 1) / 0.9;
+  const m = Math.hypot(x, y); if (m > 1) { x /= m; y /= m; }
+  return [x, y];
+}
+let joyDown = false;
+$("joy").onpointerdown = e => { if (!tx) return status("Connect first.", true); joyDown = true; $("joy").setPointerCapture(e.pointerId); [motion.x, motion.y] = joyXY(e); drawJoy(); ensureMotionScene(); };
+$("joy").onpointermove = e => { if (!joyDown) return; [motion.x, motion.y] = joyXY(e); drawJoy(); ensureMotionScene(); };
+$("joy").onpointerup = $("joy").onpointercancel = () => {
+  joyDown = false;
+  if (motion.spring) {
+    motion.x = 0; motion.y = 0; ensureMotionScene();          // beams back to centre...
+    if (motion.auto) setTimeout(() => { if (!joyDown) { motion.x = null; motion.y = null; drawJoy(); ensureMotionScene(); } }, 400);  // ...then back to the show
+  }
+  drawJoy();
+};
+$("springBtn").onclick = () => { motion.spring = !motion.spring; $("springBtn").classList.toggle("on", motion.spring); $("springBtn").textContent = motion.spring ? "Spring to center" : "Hold position"; };
+$("autoBtn").onclick = () => {
+  motion.auto = !motion.auto;
+  $("autoBtn").classList.toggle("on", motion.auto); $("autoBtn").textContent = "Auto motion: " + (motion.auto ? "ON" : "OFF");
+  if (motion.auto) { motion.x = motion.y = motion.spin = motion.angle = null; $("spin").value = 0; $("spinVal").textContent = "0"; drawJoy(); ensureMotionScene(); }
+};
+$("spin").oninput = e => {
+  let v = +e.target.value; if (Math.abs(v) < 6) v = 0;                 // centre detent
+  motion.spin = v / 100; $("spinVal").textContent = v > 0 ? v + "% CW" : v < 0 ? -v + "% CCW" : "0";
+  if (tx) ensureMotionScene();
+};
+$("spin").onchange = () => { if (motion.auto) { motion.spin = null; $("spin").value = 0; $("spinVal").textContent = "0"; if (tx) ensureMotionScene(); } };
+$("burst").onclick = () => {
+  if (!tx) return status("Connect first.", true);
+  const prev = motion.spin; motion.spin = pick([-1, 1]); ensureMotionScene();
+  setTimeout(() => { motion.spin = prev; ensureMotionScene(); }, 1500);
+};
+$("flip180").onclick = () => {
+  if (!tx) return status("Connect first.", true);
+  const prev = motion.angle, cur = lastScene && lastScene.rot < 128 ? lastScene.rot : 0;
+  motion.angle = (cur + 64) % 128; ensureMotionScene();
+  setTimeout(() => { motion.angle = prev; ensureMotionScene(); }, 900);
+};
+drawJoy();
+
+// ---- Natural song sections: drop / build / breakdown, chosen at random like a real set ----
+let sec = { name: "drop", left: 8, total: 8 }, spinDir = 1, axisPick = 0;
+const PARTY_ORDER = [["breakdown", 8], ["build", 8], ["drop", 16], ["breakdown", 8], ["build", 4], ["drop", 16]];
+let partyIdx = 0;
+function nextSection() {
+  if (chase === "party") { const [n, b] = PARTY_ORDER[partyIdx++ % PARTY_ORDER.length]; sec = { name: n, left: b, total: b }; }
+  else {
+    const p = sec.name, r = Math.random();
+    let n = p === "build" ? "drop" : p === "drop" ? (r < .45 ? "drop" : r < .72 ? "build" : "breakdown") : (r < .65 ? "build" : "drop");
+    if (mic && micLevel < 25 && n === "drop") n = "breakdown";          // quiet room -> calm section
+    const bars = n === "build" ? 4 : n === "breakdown" ? (r < .5 ? 4 : 8) : (r < .5 ? 8 : 16);
+    sec = { name: n, left: bars, total: bars };
+  }
+  axisPick = Math.floor(Math.random() * 2);
+  status((SHOWS[chase] ? SHOWS[chase].label : "") + ": " + sec.name.toUpperCase());
+}
+
+function chaseStep() {
+  const t = step++;                          // half-beat ticks
+  if (t % 8 === 0) { if (t === 0) { sec = { name: chase === "club" ? "drop" : "build", left: 4, total: 4 }; partyIdx = 0; if (chase === "party") nextSection(); } else if (--sec.left <= 0) nextSection(); }
+  const beat = t % 2 === 0, bar = Math.floor(t / 8), inBar = t % 8;
+  const prog = 1 - sec.left / sec.total;      // 0..1 through the section
+
+  if (chase === "anim") return animStep(t);
+
+  if (chase === "rave" || chase === "party" || chase === "mix") {
+    const animBar = chase === "mix" && bar % 2 === 1;
+    if (sec.name === "drop") {
+      // Every beat: new look + fast simultaneous H+V sweeps; spin REVERSES on every kick, off-beat reverses again.
+      if (beat) {
+        const sc = baseScene();
+        sc.group = animBar ? pick(G.anims) : pick([G.line, G.line, G.dot, G.bright, G.arc]);
+        sc.color = C[pick(HOT)]; sc.flow = rnd(60, 127);
+        sc.size = rnd(190, 255); sc.zoom = Math.random() < .3 ? 100 : 0;
+        sc.hmove = sweepByte(rnd(.75, 1)); sc.vmove = sweepByte(rnd(.75, 1));
+        sc.hflip = Math.random() < .5 ? 128 + rnd(60, 127) : 0; sc.vflip = Math.random() < .35 ? 128 + rnd(60, 127) : 0;
+        spinDir = -spinDir; sc.rot = spinByte(spinDir * rnd(.8, 1));
+        queueScene(sc);
+      } else if (lastScene) { spinDir = -spinDir; queueScene({ ...lastScene, rot: spinByte(spinDir * rnd(.8, 1)) }); }
+    } else if (sec.name === "build") {
+      // Spin and sweeps ramp up through the build; last bar goes to half-beat changes.
+      if (beat || prog > .75) {
+        const sc = baseScene();
+        sc.group = pick([G.line, G.dot]); sc.color = C[HOT[t % HOT.length]];
+        sc.rot = spinByte(spinDir * (.15 + .85 * prog));
+        sc.hmove = sweepByte(.25 + .6 * prog); sc.vmove = sweepByte(.25 + .6 * prog);
+        sc.zoom = prog > .5 ? 100 : 16; sc.size = 160 + 90 * prog;
+        queueScene(sc);
+      }
+    } else {
+      // Breakdown: slow, wide, hypnotic: one axis only, no spin.
+      if (t % 16 === 0) {
+        const sc = baseScene();
+        sc.group = animBar || chase === "mix" ? pick(G.anims) : pick([G.line, G.arc]);
+        sc.color = C[pick(COOL)]; sc.flow = 20; sc.wave = Math.random() < .5 ? 40 : 0;
+        if (axisPick) sc.hmove = sweepByte(.12); else sc.vmove = sweepByte(.12);
+        queueScene(sc);
+      }
+    }
+  } else if (chase === "club") {
+    // Groove: H/V sweeps locked to half-time (new sweep every 2 bars), look changes on the beat,
+    // short spin burst on the snare (beat 3), bigger spin + flip burst on every 4-bar phrase.
+    if (!beat) return;
+    const sc = lastScene && inBar !== 0 ? { ...lastScene } : baseScene();
+    if (inBar === 0 || !lastScene) {
+      sc.group = pick([G.line, G.line, G.dot, G.bright]); sc.color = C[pick(HOT)];
+      if (bar % 2 === 0) { sc.hmove = sweepByte(sec.name === "breakdown" ? .12 : rnd(.35, .55)); sc.vmove = sec.name === "breakdown" ? 64 : sweepByte(rnd(.3, .5)); }
+      else if (lastScene) { sc.hmove = lastScene.hmove; sc.vmove = lastScene.vmove; }
+    } else { sc.graph = rnd(0, 255); }
+    sc.rot = 0; sc.hflip = 0;
+    if (inBar === 4 && sec.name !== "breakdown") sc.rot = spinByte(pick([-1, 1]) * .9);       // snare spin burst
+    if (bar % 4 === 3 && sec.name !== "breakdown") { sc.rot = spinByte(spinDir * 1); sc.hflip = 220; spinDir = -spinDir; }
+    queueScene(sc);
+  }
+}
+
+function animStep(t) {
+  // Built-in animations as scenes with slow vertical wave + gentle drift; your drawings mixed in.
+  if (t % 8 !== 0) return;
+  const cycle = t / 8, mine = loadMine();
+  if (mine.length && cycle % 5 === 4) return sendFrame(drawFrame(strokesToPoints(pick(mine).strokes)));
+  const sc = baseScene();
+  sc.group = pick(G.anims); sc.color = C[pick(["rainbow", "change", "seg4", "seg8", "white", "cyan"])]; sc.flow = 30;
+  sc.vmove = sweepByte(.15); sc.hmove = sweepByte(.08); sc.size = 230;
+  if (cycle % 4 === 3) sc.rot = spinByte(pick([-1, 1]) * .5);
+  queueScene(sc);
 }
 // ---------- Phone mic beat detection ----------
 // Low-band energy vs. its running average; a kick = jump above 1.35x average (min 280 ms apart).
-let mic = null, lastBeatAt = 0, beatGap = 470;
+let mic = null, lastBeatAt = 0, beatGap = 470, micLevel = 100;
 async function startMic() {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -474,7 +654,7 @@ async function startMic() {
   mic = { stream, ctx, timer: setInterval(() => {
     an.getByteFrequencyData(buf);
     let e = 0; for (let i = 1; i <= hi; i++) e += buf[i]; e /= hi;
-    avg = avg ? avg * 0.95 + e * 0.05 : e;
+    avg = avg ? avg * 0.95 + e * 0.05 : e; micLevel = avg;
     const now = performance.now();
     if (e > avg * 1.35 && e > 60 && now - lastBeatAt > 280) {
       const gap = now - lastBeatAt; if (gap < 1000) beatGap = beatGap * 0.7 + gap * 0.3;
@@ -507,6 +687,7 @@ function startChase(name) {
 }
 let chaseTimer = null;
 function stopChase() {
+  inProgram = false; pending = null; lastScene = null;
   if (chaseTimer) clearInterval(chaseTimer);
   chaseTimer = null; chase = null;
   $("tempo").hidden = true;
