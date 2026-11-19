@@ -87,9 +87,14 @@
       <button class="show wide" data-show="anim"><b>ANIMATIONS</b><span>The laser's own animations: chicken, plane, rocket, jet, bat, horse, eagle, dolphin, lion and more, mixed with beam bursts</span></button>
     </div>
     <button id="openDraw" style="margin-top:10px">Draw or upload your own animation</button>
-    <div id="tempo" hidden>
+    <div id="tempo">
       <label style="margin-top:14px"><span>Tempo (BPM)</span><span id="bpmVal"></span></label>
       <input type="range" id="bpm" min="90" max="180" step="1" value="128">
+      <div class="seg" style="grid-template-columns:1fr 2fr 1fr;margin-bottom:10px">
+        <button id="bpmDown" aria-label="Tempo down">−</button>
+        <button id="tapBtn">TAP to the beat</button>
+        <button id="bpmUp" aria-label="Tempo up">+</button>
+      </div>
       <button id="micBtn" style="margin-bottom:10px">Sync to the music with the phone mic: OFF</button>
       <p class="note">With mic sync on, the show follows the kick drum instead of the tempo slider. The laser's own sound mode stays on in RAVE too. PARTY SHOW, RAVE, CLUB, RAVE + ANIMATIONS and ANIMATIONS are driven by this page: keep it open with the screen on. Tapping LINES or CLASSIC stops the chase.</p>
     </div>
@@ -911,7 +916,6 @@ function startChase(name) {
   chase = name; step = 0; lastSection = "";
   const ms = 60000 / +$("bpm").value / 2;              // half-beat ticks
   if (!mic) chaseTimer = setInterval(chaseStep, ms);
-  $("tempo").hidden = false;
   try { navigator.wakeLock && navigator.wakeLock.request("screen").then(l => wakeLock = l).catch(() => {}); } catch {}
 }
 let chaseTimer = null;
@@ -919,11 +923,25 @@ function stopChase() {
   inProgram = false; pending = null; lastScene = null; look = null; move = null;
   if (chaseTimer) clearInterval(chaseTimer);
   chaseTimer = null; chase = null;
-  $("tempo").hidden = true;
   try { wakeLock && wakeLock.release(); } catch {} wakeLock = null;
 }
-$("bpm").oninput = e => { $("bpmVal").textContent = e.target.value; if (chase) startChase(chase); };
-$("bpmVal").textContent = $("bpm").value;
+// Tempo: changes only the beat clock's speed; the show keeps its place (no restart).
+function setTempo(v) {
+  v = Math.max(90, Math.min(180, Math.round(v)));
+  $("bpm").value = v; $("bpmVal").textContent = v + " BPM";
+  if (chaseTimer) { clearInterval(chaseTimer); chaseTimer = setInterval(chaseStep, 60000 / v / 2); }
+}
+$("bpm").oninput = e => setTempo(+e.target.value);
+$("bpmDown").onclick = () => setTempo(+$("bpm").value - 1);
+$("bpmUp").onclick = () => setTempo(+$("bpm").value + 1);
+let taps = [];
+$("tapBtn").onclick = () => {
+  const t = performance.now();
+  taps = taps.filter(x => t - x < 3000); taps.push(t);
+  if (taps.length >= 3) { const gaps = taps.slice(1).map((x, i) => x - taps[i]); setTempo(60000 / (gaps.reduce((a, b) => a + b, 0) / gaps.length)); }
+  else $("bpmVal").textContent = "tap " + (4 - taps.length) + " more…";
+};
+$("bpmVal").textContent = $("bpm").value + " BPM";
 
 document.querySelectorAll(".show").forEach(b => b.onclick = async () => {
   const s = SHOWS[b.dataset.show];
