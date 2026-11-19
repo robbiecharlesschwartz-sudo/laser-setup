@@ -39,6 +39,18 @@
   details ol { padding-left:20px; margin:8px 0 0; }
   details li { margin:4px 0; }
   [hidden] { display:none !important; }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.75); display:flex; align-items:flex-end; justify-content:center; z-index:10; }
+  .sheet { background:var(--card); width:100%; max-width:480px; max-height:100%; overflow:auto; border-radius:18px 18px 0 0; padding:16px; }
+  .sheet header { margin-bottom:10px; }
+  #pad { width:100%; aspect-ratio:1; background:#000; border-radius:12px; display:block; touch-action:none; }
+  .row3 { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:10px; }
+  .pens { display:grid; grid-template-columns:repeat(7,1fr); gap:6px; margin-top:10px; }
+  .pens button { padding:0; height:32px; border-radius:8px; border:2px solid transparent; }
+  .pens button.on { border-color:#fff; }
+  .mine { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px; }
+  .mine button { padding:6px; font-size:12px; position:relative; }
+  .mine img { width:100%; aspect-ratio:1; display:block; background:#000; border-radius:6px; }
+  .mine .x { position:absolute; top:2px; right:6px; color:var(--dim); }
 </style>
 </head>
 <body>
@@ -70,10 +82,12 @@
       <button class="show wide" data-show="mix"><b>RAVE + ANIMATIONS</b><span>Animations and beams trading off, both reacting to the music</span></button>
       <button class="show wide" data-show="anim"><b>ANIMATIONS</b><span>The laser's own animations: chicken, plane, rocket, jet, bat, horse, eagle, dolphin, lion and more, mixed with beam bursts</span></button>
     </div>
+    <button id="openDraw" style="margin-top:10px">Draw or upload your own animation</button>
     <div id="tempo" hidden>
       <label style="margin-top:14px"><span>Tempo (BPM)</span><span id="bpmVal"></span></label>
       <input type="range" id="bpm" min="90" max="180" step="1" value="128">
-      <p class="note">PARTY SHOW, RAVE, CLUB, RAVE + ANIMATIONS and ANIMATIONS are driven by this page: keep it open with the screen on. Tapping LINES or CLASSIC stops the chase.</p>
+      <button id="micBtn" style="margin-bottom:10px">Sync to the music with the phone mic: OFF</button>
+      <p class="note">With mic sync on, the show follows the kick drum instead of the tempo slider. The laser's own sound mode stays on in RAVE too. PARTY SHOW, RAVE, CLUB, RAVE + ANIMATIONS and ANIMATIONS are driven by this page: keep it open with the screen on. Tapping LINES or CLASSIC stops the chase.</p>
     </div>
   </div>
 
@@ -101,6 +115,27 @@
     <button class="link" id="disconnect" hidden>Disconnect</button>
   </div>
 </main>
+
+<div class="modal" id="drawModal" hidden>
+  <div class="sheet">
+    <header><h1 style="font-size:18px">Your animation</h1><button class="link" id="closeDraw" style="width:auto;padding:4px">Close</button></header>
+    <canvas id="pad" width="600" height="600"></canvas>
+    <div class="row" style="display:flex;justify-content:space-between;color:var(--dim);font-size:13px;margin-top:6px"><span id="ptCount">0 points</span><span>max 600</span></div>
+    <div class="pens" id="pens"></div>
+    <div class="row3">
+      <button id="undo">Undo</button>
+      <button id="clearPad">Clear</button>
+      <button id="uploadBtn">Upload image</button>
+    </div>
+    <input type="file" id="fileIn" accept="image/*" hidden>
+    <div class="row3" style="grid-template-columns:1fr 1fr">
+      <button class="primary" id="sendDraw">Send to laser</button>
+      <button id="saveDraw">Add to ANIMATIONS</button>
+    </div>
+    <p class="note" style="margin-top:10px">Draw with your finger, or upload a bold logo or icon (it gets traced into lines). Saved drawings join the ANIMATIONS show.</p>
+    <div class="mine" id="mine"></div>
+  </div>
+</div>
 
 <script>
 const SVC = 0xff00, TX = 0xff02, RX = 0xff01;
@@ -201,6 +236,11 @@ async function apply(change, msg) {
 // Like a DMX chaser (QLC+) / party-parrot: the page pushes a new look on every beat,
 // with quick bursts every 8 beats. Laser speed is maxed; the page sets the pace.
 const RAVE_COLORS = [8, 1, 7, 3, 5, 6, 2, 4];
+// Dense multi-beam rows (Outdoor group) -> fans, sheets and tunnels in haze.
+const DENSE = [13, 25, 34, 35, 49, 50, 51, 61, 64, 7, 8, 33, 47, 48, 23, 20, 36, 46, 59, 60, 62, 63];
+// Color pairs from the reference: red/blue, red/cyan, magenta/white, blue/white, red/white, green/cyan.
+const PAIRS = [[1, 3], [1, 5], [6, 7], [3, 7], [1, 7], [2, 5], [3, 6], [1, 6]];
+let lastLook = [13];
 const CLUB_COLORS = [1, 3, 7, 6, 5, 4, 2, 9];
 let chase = null, step = 0, sending = false, wakeLock = null;
 
@@ -258,18 +298,148 @@ function partyStep(tick) {
   return null;
 }
 
+// ---------- Draw / upload your own ----------
+// Draw frame: F0F1 F2F3 + 16 bytes + count(2) + points + F4F5 F6F7. Point = X(2) Y(2) (color<<4|flag).
+// Coords sign-magnitude, about ±400. First point of a stroke: laser off (color 0), flag 1 = stroke end.
+const PEN = { 1:"#ff3b3b", 2:"#3bff6a", 3:"#3b6bff", 4:"#ffe43b", 5:"#3bffff", 6:"#e23bff", 7:"#ffffff" };
+const MAXP = 600;
+let strokes = [], pen = 1, drawing = null;
+const smv = v => { let r = Math.round(v); if (r < 0) r = 0x8000 | -r; return r.toString(16).padStart(4, "0"); };
+function drawFrame(pts) {
+  const body = pts.map(([x, y, c, f]) => smv(x) + smv(y) + ((c << 4) | (f & 15)).toString(16).padStart(2, "0")).join("");
+  return ("F0F1F2F3" + "00".repeat(16) + smv(pts.length) + body + "F4F5F6F7").toUpperCase();
+}
+function strokesToPoints(list) {               // canvas 0..600 -> laser ±300
+  const out = [];
+  for (const st of list) st.pts.forEach(([x, y], k) => {
+    const X = (x - 300), Y = -(y - 300);
+    if (k === 0) out.push([X, Y, 0, 1]);
+    out.push([X, Y, st.c, k === st.pts.length - 1 ? 1 : 0]);
+  });
+  return out.slice(0, MAXP);
+}
+function redraw() {
+  const g = $("pad").getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, 600, 600);
+  g.lineWidth = 4; g.lineJoin = g.lineCap = "round";
+  for (const st of strokes) {
+    g.strokeStyle = PEN[st.c]; g.beginPath();
+    st.pts.forEach(([x, y], k) => k ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke();
+  }
+  $("ptCount").textContent = strokesToPoints(strokes).length + " points";
+}
+function padXY(e) { const r = $("pad").getBoundingClientRect(); return [(e.clientX - r.left) / r.width * 600, (e.clientY - r.top) / r.height * 600]; }
+$("pad").onpointerdown = e => { $("pad").setPointerCapture(e.pointerId); drawing = { c: pen, pts: [padXY(e)] }; strokes.push(drawing); redraw(); };
+$("pad").onpointermove = e => {
+  if (!drawing) return;
+  const p = padXY(e), q = drawing.pts[drawing.pts.length - 1];
+  if (Math.hypot(p[0] - q[0], p[1] - q[1]) >= 12) { drawing.pts.push(p); redraw(); }
+};
+$("pad").onpointerup = $("pad").onpointercancel = () => { if (drawing && drawing.pts.length < 2) strokes.pop(); drawing = null; redraw(); };
+Object.entries(PEN).forEach(([c, css]) => {
+  const b = document.createElement("button"); b.style.background = css; b.dataset.c = c; b.setAttribute("aria-label", "Pen color");
+  b.onclick = () => { pen = +c; [...$("pens").children].forEach(x => x.classList.toggle("on", x === b)); };
+  $("pens").appendChild(b);
+});
+$("pens").children[0].classList.add("on");
+$("undo").onclick = () => { strokes.pop(); redraw(); };
+$("clearPad").onclick = () => { strokes = []; redraw(); };
+$("openDraw").onclick = () => { $("drawModal").hidden = false; redraw(); renderMine(); };
+$("closeDraw").onclick = () => $("drawModal").hidden = true;
+
+// Upload: trace edges of a bold image into simplified strokes.
+function rdp(p, eps) {
+  if (p.length < 3) return p;
+  const a = p[0], b = p[p.length - 1], dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
+  let idx = 0, dm = 0;
+  for (let i = 1; i < p.length - 1; i++) { const d = Math.abs(dy * p[i][0] - dx * p[i][1] + b[0] * a[1] - b[1] * a[0]) / L; if (d > dm) { dm = d; idx = i; } }
+  return dm <= eps ? [a, b] : rdp(p.slice(0, idx + 1), eps).slice(0, -1).concat(rdp(p.slice(idx), eps));
+}
+function traceImage(img) {
+  const N = 160, c = document.createElement("canvas"); c.width = c.height = N;
+  const x = c.getContext("2d", { willReadFrequently: true }), sc = Math.min(N / img.width, N / img.height) * 0.9;
+  x.drawImage(img, (N - img.width * sc) / 2, (N - img.height * sc) / 2, img.width * sc, img.height * sc);
+  const d = x.getImageData(0, 0, N, N).data, at = (i, j) => (j * N + i) * 4;
+  let alpha = false; for (let k = 3; k < d.length; k += 4) if (d[k] < 200) { alpha = true; break; }
+  const bg = [0, 1, 2].map(ch => (d[at(0,0)+ch] + d[at(N-1,0)+ch] + d[at(0,N-1)+ch] + d[at(N-1,N-1)+ch]) / 4);
+  const fg = new Uint8Array(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const p = at(i, j);
+    fg[j*N+i] = alpha ? d[p+3] > 128 : (Math.abs(d[p]-bg[0]) + Math.abs(d[p+1]-bg[1]) + Math.abs(d[p+2]-bg[2]) > 120); }
+  const edge = new Uint8Array(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) if (fg[j*N+i] &&
+    (i==0||j==0||i==N-1||j==N-1||!fg[j*N+i-1]||!fg[j*N+i+1]||!fg[(j-1)*N+i]||!fg[(j+1)*N+i])) edge[j*N+i] = 1;
+  const nb = [[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]], paths = [];
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    if (!edge[j*N+i]) continue;
+    const path = [[i, j]]; edge[j*N+i] = 0; let ci = i, cj = j, go = true;
+    while (go) { go = false; for (const [a, b] of nb) { const ni = ci + a, nj = cj + b;
+      if (ni >= 0 && nj >= 0 && ni < N && nj < N && edge[nj*N+ni]) { edge[nj*N+ni] = 0; path.push([ni, nj]); ci = ni; cj = nj; go = true; break; } } }
+    if (path.length >= 8) { if (Math.hypot(path[0][0]-ci, path[0][1]-cj) < 3) path.push(path[0]); paths.push(path); }
+  }
+  paths.sort((a, b) => b.length - a.length);
+  for (let eps = 1.2; eps < 12; eps *= 1.3) {
+    const out = []; let n = 0;
+    for (const p of paths) { const q = rdp(p, eps); if (n + q.length + 1 > MAXP) break; out.push(q); n += q.length + 1; }
+    if (out.length === paths.length || eps * 1.3 >= 12) return out.map(q => ({ c: pen, pts: q.map(([a, b]) => [a / N * 600, b / N * 600]) }));
+  }
+  return [];
+}
+$("uploadBtn").onclick = () => $("fileIn").click();
+$("fileIn").onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const im = new Image();
+  im.onload = () => { strokes = traceImage(im); redraw(); status(strokes.length ? "Image traced. Pick a pen color first to recolor, then upload again." : "Couldn't find shapes in that image. Try a bold logo.", !strokes.length); };
+  im.src = URL.createObjectURL(f); e.target.value = "";
+};
+$("sendDraw").onclick = async () => {
+  if (!tx) return status("Connect to the laser first.", true);
+  if (!strokes.length) return;
+  stopChase(); active = null; render();
+  try { await write(drawFrame(strokesToPoints(strokes))); status("Your drawing is on the laser. Tap a show to go back."); }
+  catch (e) { status(e.message, true); }
+};
+// Saved drawings (this phone only) join the ANIMATIONS show.
+function loadMine() { try { return JSON.parse(localStorage.getItem("myAnims") || "[]"); } catch { return []; } }
+function storeMine(l) { try { localStorage.setItem("myAnims", JSON.stringify(l)); } catch {} }
+function renderMine() {
+  const box = $("mine"); box.innerHTML = "";
+  loadMine().forEach((m, i) => {
+    const b = document.createElement("button");
+    b.innerHTML = '<img alt=""><span class="x" aria-label="Delete">×</span>'; b.querySelector("img").src = m.thumb;
+    b.onclick = ev => {
+      if (ev.target.classList.contains("x")) { const l = loadMine(); l.splice(i, 1); storeMine(l); renderMine(); return; }
+      strokes = m.strokes; redraw();
+    };
+    box.appendChild(b);
+  });
+}
+$("saveDraw").onclick = () => {
+  if (!strokes.length) return;
+  const l = loadMine();
+  l.push({ strokes: strokes.map(s => ({ c: s.c, pts: s.pts.map(p => p.map(Math.round)) })), thumb: $("pad").toDataURL("image/jpeg", 0.5) });
+  storeMine(l.slice(-12)); renderMine(); status("Added to ANIMATIONS.");
+};
+
 function chaseStep() {
   const beat = step++;
   const bar = Math.floor(beat / 2) % 16;                 // ticks are half-beats
   let frame = null;
+  // Reference: Laserworld nightclub showcase. Dense beam fans / sheets / tunnels,
+  // 1-2 colors per look (red/blue, red/cyan, magenta/white), switching on the beat, white blinder hits at peaks.
   if (chase === "rave") {
-    // Every half beat: new beam set + color; last 2 beats of every 8: rapid single-pattern burst.
-    const burst = bar % 8 >= 6;
-    frame = beamFrame(burst ? [pick(MULTI_BEAMS)] : pickN(RAVE_BEAMS, 6), RAVE_COLORS[beat % RAVE_COLORS.length], true);
+    // Sound mode ON (laser mic reacts to the music) + page swaps fan & color pair on every beat,
+    // alternating the two colors of the pair on the off-beat. Every 16 beats: 1 bar white/red blinder strobe.
+    const b = Math.floor(beat / 2), off = beat % 2, peak = b % 16 >= 12;
+    const pair = PAIRS[Math.floor(b / 4) % PAIRS.length];
+    if (peak) frame = beamFrame([pick(DENSE)], off ? 7 : 1, true);
+    else frame = beamFrame(off ? lastLook : (lastLook = pickN(DENSE, 3)), pair[off], true);
   } else if (chase === "club") {
-    // On the beat: one multi-beam look + color. Bars 7-8: half-beat bursts.
-    const burst = bar % 8 >= 6;
-    if (burst || beat % 2 === 0) frame = beamFrame([pick(MULTI_BEAMS)], CLUB_COLORS[Math.floor(beat / (burst ? 1 : 2)) % CLUB_COLORS.length], false);
+    // Club: one big look per beat (fan/sheet/tunnel), color pair changes every bar,
+    // last bar of every 4: half-beat build, then a white hit on the 1.
+    const b = Math.floor(beat / 2), off = beat % 2, build = b % 16 >= 12;
+    const pair = PAIRS[Math.floor(b / 4) % PAIRS.length];
+    if (b % 16 === 0 && !off) frame = beamFrame([pick(DENSE)], 7, false);
+    else if (build || !off) frame = beamFrame([pick(DENSE)], pair[(b + off) % 2], false);
   } else if (chase === "party") {
     frame = partyStep(beat);
   } else if (chase === "mix") {
@@ -282,17 +452,56 @@ function chaseStep() {
     // 4 beats of one animation, next animation, ... every 4th one is followed by 2 beats of beam bursts.
     const cycle = Math.floor(beat / 8), pos = beat % 8;
     if (cycle % 4 === 3) { if (pos % 2 === 0) frame = beamFrame([pick(MULTI_BEAMS)], CLUB_COLORS[beat % CLUB_COLORS.length], false); }
-    else if (pos === 0) frame = animFrame(list[(cycle - Math.floor(cycle / 4)) % list.length], CLUB_COLORS[cycle % CLUB_COLORS.length]);
+    else if (pos === 0) {
+      const mine = loadMine(), all = list.length + mine.length, k = (cycle - Math.floor(cycle / 4)) % all;
+      frame = k < list.length ? animFrame(list[k], CLUB_COLORS[cycle % CLUB_COLORS.length]) : drawFrame(strokesToPoints(mine[k - list.length].strokes));
+    }
   }
   if (!frame || sending || !tx) return;
   sending = true;
   fastWrite(frame).catch(() => {}).finally(() => sending = false);
 }
+// ---------- Phone mic beat detection ----------
+// Low-band energy vs. its running average; a kick = jump above 1.35x average (min 280 ms apart).
+let mic = null, lastBeatAt = 0, beatGap = 470;
+async function startMic() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = ctx.createMediaStreamSource(stream), an = ctx.createAnalyser();
+  an.fftSize = 1024; an.smoothingTimeConstant = 0.2; src.connect(an);
+  const buf = new Uint8Array(an.frequencyBinCount), hi = Math.max(2, Math.round(150 / (ctx.sampleRate / an.fftSize)));
+  let avg = 0;
+  mic = { stream, ctx, timer: setInterval(() => {
+    an.getByteFrequencyData(buf);
+    let e = 0; for (let i = 1; i <= hi; i++) e += buf[i]; e /= hi;
+    avg = avg ? avg * 0.95 + e * 0.05 : e;
+    const now = performance.now();
+    if (e > avg * 1.35 && e > 60 && now - lastBeatAt > 280) {
+      const gap = now - lastBeatAt; if (gap < 1000) beatGap = beatGap * 0.7 + gap * 0.3;
+      lastBeatAt = now;
+      if (chase) { chaseStep(); setTimeout(() => chase && chaseStep(), beatGap / 2); }
+      $("bpmVal").textContent = Math.round(60000 / beatGap) + " (from mic)";
+    }
+  }, 15) };
+}
+function stopMic() {
+  if (!mic) return;
+  clearInterval(mic.timer); mic.stream.getTracks().forEach(t => t.stop()); mic.ctx.close(); mic = null;
+}
+$("micBtn").onclick = async () => {
+  try {
+    if (mic) { stopMic(); if (chase) startChase(chase); }
+    else { await startMic(); if (chaseTimer) { clearInterval(chaseTimer); chaseTimer = null; } }
+  } catch (e) { status("Couldn't use the microphone: " + e.message, true); }
+  $("micBtn").textContent = "Sync to the music with the phone mic: " + (mic ? "ON" : "OFF");
+  $("micBtn").classList.toggle("primary", !!mic);
+};
+
 function startChase(name) {
   stopChase();
   chase = name; step = 0; lastSection = "";
   const ms = 60000 / +$("bpm").value / 2;              // half-beat ticks
-  chaseTimer = setInterval(chaseStep, ms);
+  if (!mic) chaseTimer = setInterval(chaseStep, ms);
   $("tempo").hidden = false;
   try { navigator.wakeLock && navigator.wakeLock.request("screen").then(l => wakeLock = l).catch(() => {}); } catch {}
 }
