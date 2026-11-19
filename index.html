@@ -710,6 +710,8 @@ const EXP = {
   irregular:(b) => .5 + .25 * Math.sin(b * 1.7) + .25 * Math.sin(b * .63),   // controlled irregular cycle
   max:      () => 1,
   collapse: (b, ph) => b % 8 < 7 ? 1 : .15 + .85 * ph,                       // collapse & re-explode each 2 bars
+  tunnel:   (b) => .12 + .88 * (.5 - .5 * Math.cos(b / 4 * Math.PI * 2)),    // circles: tiny -> full -> tiny every bar
+  tunnelX:  (b) => .12 + .88 * Math.abs(Math.sin(b / 2 * Math.PI)),           // faster in-and-out, twice a bar
 };
 const EXP_FOR = {
   breakdown: ["breathe", "swell", "irregular"], build: ["swell", "kick", "breathe"],
@@ -771,12 +773,13 @@ function newFormation(sectionChange) {
   show.history.push(show.form);
   const f0 = F[show.form];
   show.graph = f0.groups[0] === G.line ? pick(f0.dotted ? [50] : [0, 150, 200]) : Math.round(rnd(0, 200));
-  show.exp = pick(EXP_FOR[f0.exp || (chase === "club" ? "club" : show.sec.name)]);
+  show.exp = f0.groups[0] === G.arc ? (show.sec.name === "drop" ? "tunnelX" : "tunnel")
+           : pick(EXP_FOR[f0.exp || (chase === "club" ? "club" : show.sec.name)]);
   show.expT0 = performance.now();
   show.colIdx = 0;
   const f = F[show.form], e = sectionEnergy();
   // User feedback: previous speed = the slowest it should ever get. Floor at ~55%, climbing to max with energy.
-  const speed = k => k ? Math.min(1, .55 + .45 * Math.min(1, k * (.8 + .7 * e))) : 0;
+  const speed = k => k ? Math.min(.92, .45 + .5 * Math.min(1, k * (.7 + .6 * e))) : 0;   // a touch slower than v19
   show.tgt = { h: speed(f.m.h), v: speed(f.m.v), hflip: speed(f.m.hflip), vflip: speed(f.m.vflip),
                rot: f.m.rot ? show.spinSign * speed(f.m.rot) : 0 };
   if (chase === "club") show.tgt.rot *= .8;                               // CLUB: spin slightly reined in
@@ -798,7 +801,9 @@ function buildScene() {
   sc.color = pal.split && show.colIdx % 2 === 0 ? C.seg2 : pal.cols[show.colIdx % pal.cols.length];
   sc.flow = f.flow ?? (sectionEnergy() > .6 ? 100 : 40);
   const L = show.layers || new Set();
-  sc.size = Math.round(255 * (L.has("expand") ? expansionNow() : 1));
+  const target = (L.has("expand") || f.groups[0] === G.arc) ? expansionNow() : 1;
+  show.sizeNow = show.sizeNow == null ? target : show.sizeNow + (target - show.sizeNow) * (show.exp === "kick" || show.exp === "snap" ? .6 : .3);
+  sc.size = Math.round(255 * show.sizeNow);
   sc.wave = L.has("wave") ? (f.wave || 120) : (f.wave && show.sec.name !== "drop" ? f.wave : 0);
   if (L.has("split") && !pal.split) sc.color = show.colIdx % 2 ? C.seg2 : sc.color;
   if (L.has("flow")) sc.flow = 127;
@@ -823,7 +828,7 @@ function layerShuffle(S) {
   }
   show.layerHist.push(best);
   show.layers = new Set(best.split(","));
-  if (show.layers.has("expand") && Math.random() < .6) { show.exp = pick(EXP_FOR[chase === "club" ? "club" : S]); show.expT0 = performance.now(); }
+  if (show.layers.has("expand") && F[show.form].groups[0] !== G.arc && Math.random() < .6) { show.exp = pick(EXP_FOR[chase === "club" ? "club" : S]); show.expT0 = performance.now(); }
   if (show.layers.has("spin")) { show.spinSign *= -1; show.tgt.rot = show.spinSign * (S === "drop" ? rnd(.75, 1) : rnd(.55, .8)); }
   if (show.layers.has("roll")) show.tgt.hflip = Math.max(show.tgt.hflip, rnd(.65, 1));
   if (show.layers.has("flip3d")) show.tgt.vflip = rnd(.6, 1); else show.tgt.vflip = 0;
@@ -848,7 +853,7 @@ function chaseStep() {
     if (chase !== "club" && show.sec.left === 1 && inBar >= 6) { if (inBar === 6) blackout(); return; }
   }
   // Breakdowns settle quickly at first (contrast after a drop), then glide.
-  easeMotion(S === "drop" ? .85 : S === "build" ? .6 : (show.sec.total - show.sec.left < 1 ? .6 : .4));
+  easeMotion(S === "drop" ? .45 : S === "build" ? .35 : .25);           // gentle glides between motion states
   if (inBar === 0) layerShuffle(S);                  // every bar: vary which feature layers are active
 
   // Micro-events: accents on beats / snares, never a full reset.
