@@ -150,6 +150,7 @@
       <button id="bpmUp" aria-label="Tempo up">+</button>
     </div>
     <button id="micBtn">Sync to the music with the phone mic: OFF</button>
+    <div style="height:3px;background:var(--line2);border-radius:2px;margin-top:10px;overflow:hidden"><div id="micMeter" style="height:100%;width:0;background:var(--accent);transition:width .08s"></div></div>
     <p class="note" style="margin-top:12px">Mic sync follows the kick drum. Shows A, B, E, F, G are driven by this page — keep it open with the screen on.</p>
   </div>
 
@@ -291,8 +292,8 @@ function render() {
   ["speed", "sens"].forEach(id => $(id).disabled = !connected || busy);
   [...$("colors").children].forEach(b => { b.disabled = !connected || busy; b.classList.toggle("on", connected && +b.dataset.c === settings[2]); });
   if (connected) {
-    $("speed").value = pct(settings[5]); $("speedVal").textContent = pct(settings[5]) + "%";
-    $("sens").value = pct(settings[9]);
+    if (!chase) { $("speed").value = pct(settings[5]); $("speedVal").textContent = pct(settings[5]) + "%"; }
+    if (!chase) $("sens").value = pct(settings[9]);
     $("sensVal").textContent = settings[8] === 255 ? pct(settings[9]) + "%" : "off (CLUB ignores sound)";
     const c = COLORS.find(c => c[0] === settings[2]); $("colorName").textContent = c ? c[2] : "–";
   }
@@ -648,7 +649,10 @@ function onJoy() {
   if (chase) { if (!look) ensureMotionScene(); }        // live show: the 20 Hz loop applies the offset
   else aimGlobal(motion.x ?? 0, motion.y ?? 0);          // built-in modes: shift the whole output
 }
-function ensureMotionScene() {         // joystick used with no motion show running: run a static beam scene
+function ensureMotionScene() {
+  if (!chase) { const sc = lastScene ? { ...lastScene } : baseScene(); const t = performance.now();
+    if (t < live.burstUntil) sc.rot = live.burstDir > 0 ? 191 : 255; if (t < live.flipUntil) sc.hflip = 255;
+    if (live.color !== null) sc.color = live.color; pending = sc; return; }         // joystick used with no motion show running: run a static beam scene
   if (!lastScene) queueScene(baseScene()); else queueScene({ ...lastScene });
 }
 function joyXY(e) {
@@ -682,14 +686,13 @@ $("spin").oninput = e => {
 $("spin").onchange = () => { if (motion.auto) { motion.spin = null; $("spin").value = 0; $("spinVal").textContent = "0"; if (tx) ensureMotionScene(); } };
 $("burst").onclick = () => {
   if (!tx) return status("Connect first.", true);
-  const prev = motion.spin; motion.spin = pick([-1, 1]); ensureMotionScene();
-  setTimeout(() => { motion.spin = prev; ensureMotionScene(); }, 1500);
+  live.burstDir = pick([-1, 1]); live.burstUntil = performance.now() + 1500;
+  if (!chase) { ensureMotionScene(); setTimeout(ensureMotionScene, 1550); } status("Spin burst");
 };
 $("flip180").onclick = () => {
   if (!tx) return status("Connect first.", true);
-  const prev = motion.angle, cur = lastScene && lastScene.rot < 128 ? lastScene.rot : 0;
-  motion.angle = (cur + 64) % 128; ensureMotionScene();
-  setTimeout(() => { motion.angle = prev; ensureMotionScene(); }, 900);
+  live.flipUntil = performance.now() + 900;
+  if (!chase) { ensureMotionScene(); setTimeout(ensureMotionScene, 950); } status("Flip");
 };
 drawJoy();
 
@@ -851,6 +854,7 @@ const spd = k => Math.abs(k) < .03 ? 0 : 128 + Math.round(Math.min(1, Math.abs(k
 const rotB = k => Math.abs(k) < .08 ? 0 : (k > 0 ? 128 : 192) + Math.round(Math.min(1, Math.abs(k)) * 63);
 
 // SAFETY: automated shows only park the vertical position at centre or above (never aimed downward).
+const live = { speed: 1, color: null, burstUntil: 0, flipUntil: 0, level: 0 };
 function buildScene() {
   const f = F[show.form], pal = PALETTES[show.pal];
   const sc = baseScene();
@@ -870,6 +874,15 @@ function buildScene() {
   sc.rot = rotB(show.m.rot);
   sc.hflip = spd(show.m.hflip) || (f.faceOn ? 32 : 0);
   sc.vflip = spd(show.m.vflip);
+  // Sound drives the show: louder/bassier = bigger and faster (mic level 0..1).
+  const lv = mic ? live.level : 1;
+  if (mic) sc.size = Math.round(sc.size * (.35 + .65 * lv));
+  const k = live.speed * (mic ? (.6 + .4 * lv) : 1);
+  for (const key of ["hmove", "vmove", "hflip", "vflip"]) if (sc[key] >= 128) sc[key] = 128 + Math.round((sc[key] - 128) * k);
+  if (live.color !== null) sc.color = live.color;
+  const t = performance.now();
+  if (t < live.burstUntil) sc.rot = live.burstDir > 0 ? 191 : 255;
+  if (t < live.flipUntil) sc.hflip = 255;
   return sc;
 }
 
@@ -952,8 +965,11 @@ async function startMic() {
     an.getByteFrequencyData(buf);
     let e = 0; for (let i = 1; i <= hi; i++) e += buf[i]; e /= hi;
     avg = avg ? avg * 0.95 + e * 0.05 : e; micLevel = avg;
+    live.level = live.level * .7 + Math.min(1, e / 160) * .3;
+    const lvl = Math.round(live.level * 100); const m = $("micMeter"); if (m) m.style.width = lvl + "%";
     const now = performance.now();
-    if (e > avg * 1.35 && e > 60 && now - lastBeatAt > 280) {
+    const sens = live.sens ?? .7;
+    if (e > avg * (1.6 - .5 * sens) && e > 70 - 40 * sens && now - lastBeatAt > 280) {
       const gap = now - lastBeatAt; if (gap < 1000) beatGap = beatGap * 0.7 + gap * 0.3;
       lastBeatAt = now;
       if (chase) { chaseStep(); setTimeout(() => chase && chaseStep(), beatGap / 2); }
@@ -971,14 +987,14 @@ function micUI() {
 }
 async function ensureMic() {
   if (mic) return;
-  try { await startMic(); if (chaseTimer) { clearInterval(chaseTimer); chaseTimer = null; } }
+  try { await startMic(); }
   catch (e) { status("RAVE is running on the tempo clock (microphone not allowed).", true); }
   micUI();
 }
 $("micBtn").onclick = async () => {
   try {
     if (mic) { stopMic(); if (chase) startChase(chase); }
-    else { await startMic(); if (chaseTimer) { clearInterval(chaseTimer); chaseTimer = null; } }
+    else { await startMic(); }
   } catch (e) { status("Couldn't use the microphone: " + e.message, true); }
   $("micBtn").textContent = "Sync to the music with the phone mic: " + (mic ? "ON" : "OFF");
   $("micBtn").classList.toggle("primary", !!mic);
@@ -988,7 +1004,7 @@ function startChase(name) {
   stopChase();
   chase = name; step = 0; lastSection = "";
   const ms = 60000 / +$("bpm").value / 2;              // half-beat ticks
-  if (!mic) chaseTimer = setInterval(chaseStep, ms);
+  chaseTimer = setInterval(() => { if (mic && performance.now() - lastBeatAt < 1500) return; chaseStep(); }, ms);  // clock only when no beats heard
   try { navigator.wakeLock && navigator.wakeLock.request("screen").then(l => wakeLock = l).catch(() => {}); } catch {}
 }
 let chaseTimer = null;
@@ -1002,7 +1018,7 @@ function stopChase() {
 function setTempo(v) {
   v = Math.max(90, Math.min(180, Math.round(v)));
   $("bpm").value = v; $("bpmVal").textContent = v + " BPM";
-  if (chaseTimer) { clearInterval(chaseTimer); chaseTimer = setInterval(chaseStep, 60000 / v / 2); }
+  if (chaseTimer) { clearInterval(chaseTimer); chaseTimer = setInterval(() => { if (mic && performance.now() - lastBeatAt < 1500) return; chaseStep(); }, 60000 / v / 2); }
 }
 $("bpm").oninput = e => setTempo(+e.target.value);
 $("bpmDown").onclick = () => setTempo(+$("bpm").value - 1);
@@ -1032,13 +1048,19 @@ document.querySelectorAll(".show").forEach(b => b.onclick = async () => {
   if (b.dataset.show === "rave") ensureMic();            // RAVE = sound ON: laser mic + phone beat sync
 });
 $("speed").oninput = e => $("speedVal").textContent = e.target.value + "%";
-$("speed").onchange = e => apply(() => settings[5] = raw(+e.target.value), "Speed set to " + e.target.value + "%.");
+$("speed").onchange = e => chase ? (live.speed = +e.target.value / 100, status("Show speed " + e.target.value + "%")) : apply(() => settings[5] = raw(+e.target.value), "Speed set to " + e.target.value + "%.");
 $("sens").oninput = e => $("sensVal").textContent = e.target.value + "%";
-$("sens").onchange = e => apply(() => settings[9] = raw(+e.target.value), "Sensitivity set to " + e.target.value + "%.");
+$("sens").onchange = e => chase ? (live.sens = +e.target.value / 100, status("Mic sensitivity " + e.target.value + "%")) : apply(() => settings[9] = raw(+e.target.value), "Sensitivity set to " + e.target.value + "%.");
 COLORS.forEach(([c, bg, name]) => {
   const b = document.createElement("button");
   b.dataset.c = c; b.title = name; b.setAttribute("aria-label", name); b.style.background = bg;
-  b.onclick = () => apply(() => settings[2] = c, "Color: " + name + ".");
+  b.onclick = () => {
+    if (!chase) return apply(() => settings[2] = c, "Color: " + name + ".");
+    const lc = { 1: C.red, 2: C.green, 3: C.blue, 4: C.yellow, 5: C.cyan, 6: C.pink, 7: C.white, 8: null, 9: C.rainbow }[c];
+    live.color = live.color === lc ? null : lc;
+    [...$("colors").children].forEach(x => x.classList.toggle("on", x === b && live.color !== null));
+    status(live.color === null ? "Colors back to the show" : "Color locked: " + name + " (tap again to release)");
+  };
   $("colors").appendChild(b);
 });
 
