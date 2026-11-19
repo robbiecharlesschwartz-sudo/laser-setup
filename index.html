@@ -95,7 +95,7 @@
   </div>
 
   <div class="card" id="deck">
-    <h2>Manual motion: grab to take over</h2>
+    <h2>Aim: drag to point whatever is playing</h2>
     <canvas id="joy" width="600" height="600" aria-label="Move joystick: left/right and up/down"></canvas>
     <div class="seg" style="margin-top:10px">
       <button id="springBtn" class="on">Spring to center</button>
@@ -456,7 +456,10 @@ const COOL = ["blue", "cyan", "white", "seg2", "pink"];
 const rnd = (a, b) => a + Math.random() * (b - a);
 const spinByte = v => { if (Math.abs(v) < 0.05) return 0; const s = Math.round(Math.min(1, Math.abs(v)) * 63); return v > 0 ? 128 + s : 192 + s; };
 const sweepByte = v => v <= 0.02 ? 64 : 128 + Math.round(Math.min(1, v) * 127);   // 0 = parked in centre
-const posByte = v => Math.round((Math.max(-1, Math.min(1, v)) + 1) / 2 * 127);    // -1..1 -> 0..127
+// Position bytes 0-127 are CIRCULAR on this laser: 0 = centre, ~32 = one end, 64 = centre, ~96 = other end, 127 -> centre.
+// So offset d (-1..1) = sin(2*pi*b/128)  =>  b = asin(d) / (2*pi) * 128 (wrapped).
+const clamp1 = v => Math.max(-1, Math.min(1, v));
+const posByte = v => Math.round((Math.asin(clamp1(v)) / (2 * Math.PI) * 128 + 128) % 128);
 function baseScene() {
   return { graph: rnd(0, 255), group: G.line, color: C.seg4, flow: 60, size: 220, zoom: 0, rot: 0, hflip: 0, vflip: 0, hmove: 64, vmove: 64, wave: 0 };
 }
@@ -475,7 +478,7 @@ function queueScene(sc) { lastScene = sc; pending = sc; }
 // ---- Live motion: the page drives position / angle / roll itself, 20x a second ----
 // (The laser's own sweep restarts every time a scene is sent and is slow, so we don't use it.)
 let look = null, move = null, moveT0 = 0, spinAngle = 0, lastTick = performance.now();
-let strobeUntil = 0, strobeK = -1, strobeXY = [0, 0];
+let strobeUntil = 0, strobeK = -1, strobeXY = [0, 0], showXY = [0, 0];
 const wave = {
   sin: p => Math.sin(2 * Math.PI * p),
   cos: p => Math.cos(2 * Math.PI * p),
@@ -510,6 +513,7 @@ function liveScene() {
     sc.hmove = posByte(strobeXY[0]); sc.vmove = posByte(strobeXY[1]); sc.rot = Math.round(spinAngle) % 128;
     return sc;
   }
+  showXY = [x, y];
   sc.hmove = posByte(x); sc.vmove = posByte(y);
   sc.rot = Math.round(spinAngle) % 128;
   sc.hflip = move.roll ? posByte(wave.sin(sec * move.roll)) : 0;          // 3D roll
@@ -521,8 +525,9 @@ setInterval(async () => {
   const live = chase && look && move;
   if (!live && !pending) return;
   const sc = live ? liveScene() : { ...pending }; pending = null;
-  if (motion.x !== null) sc.hmove = posByte(motion.x);
-  if (motion.y !== null) sc.vmove = posByte(motion.y);
+  // Joystick AIMS the show: it offsets whatever is playing (adds to the live motion).
+  if (motion.x !== null) sc.hmove = posByte(live ? showXY[0] * .5 + motion.x : motion.x);
+  if (motion.y !== null) sc.vmove = posByte(live ? showXY[1] * .5 + motion.y : motion.y);
   if (motion.spin !== null) { spinAngle = (spinAngle + motion.spin * 2 * .05 * 128 + 128) % 128; sc.rot = Math.round(spinAngle) % 128; }
   if (motion.angle !== null) sc.rot = motion.angle;
   sending = true;
@@ -556,6 +561,31 @@ function drawJoy(x = motion.x ?? 0, y = motion.y ?? 0, held = motion.x !== null)
   g.fillStyle = held ? "#3cf0a0" : "#3a4152";
   g.beginPath(); g.arc(300 + x * R, 300 - y * R, 46, 0, Math.PI * 2); g.fill();
 }
+// Global X/Y position adjust (LightElf "xyCnf"): 10111213 [FF=don't save][auto][phase][Xcoarse][Xfine][Ycoarse][Yfine] pad 14151617.
+// Shifts the whole output in any mode. Centre = the laser's current values (settings bytes 53-58).
+let aimBusy = false, aimNext = null;
+function aimGlobal(x, y) {
+  if (!settings || !tx) return;
+  aimNext = [x, y];
+  if (aimBusy) return;
+  aimBusy = true;
+  (async () => {
+    while (aimNext) {
+      const [ax, ay] = aimNext; aimNext = null;
+      const base = settings.slice(53, 59);
+      const b = v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+      const body = ("FF" + b(base[0]) + b(base[1]) + b(base[2] + ax * 100) + b(base[3]) + b(base[4] - ay * 100) + b(base[5])).padEnd(32, "0");
+      try { await fastWrite(("10111213" + body + "14151617").toUpperCase()); } catch {}
+      $("telemetry").textContent = `Aim X ${Math.round(ax * 100)} · Y ${Math.round(ay * 100)} (whole show)`;
+      await new Promise(r => setTimeout(r, 50));
+    }
+    aimBusy = false;
+  })();
+}
+function onJoy() {
+  if (chase) { if (!look) ensureMotionScene(); }        // live show: the 20 Hz loop applies the offset
+  else aimGlobal(motion.x ?? 0, motion.y ?? 0);          // built-in modes: shift the whole output
+}
 function ensureMotionScene() {         // joystick used with no motion show running: run a static beam scene
   if (!lastScene) queueScene(baseScene()); else queueScene({ ...lastScene });
 }
@@ -566,13 +596,13 @@ function joyXY(e) {
   return [x, y];
 }
 let joyDown = false;
-$("joy").onpointerdown = e => { if (!tx) return status("Connect first.", true); joyDown = true; $("joy").setPointerCapture(e.pointerId); [motion.x, motion.y] = joyXY(e); drawJoy(); ensureMotionScene(); };
-$("joy").onpointermove = e => { if (!joyDown) return; [motion.x, motion.y] = joyXY(e); drawJoy(); ensureMotionScene(); };
+$("joy").onpointerdown = e => { if (!tx) return status("Connect first.", true); joyDown = true; $("joy").setPointerCapture(e.pointerId); [motion.x, motion.y] = joyXY(e); drawJoy(); onJoy(); };
+$("joy").onpointermove = e => { if (!joyDown) return; [motion.x, motion.y] = joyXY(e); drawJoy(); onJoy(); };
 $("joy").onpointerup = $("joy").onpointercancel = () => {
   joyDown = false;
   if (motion.spring) {
-    motion.x = 0; motion.y = 0; ensureMotionScene();          // beams back to centre...
-    if (motion.auto) setTimeout(() => { if (!joyDown) { motion.x = null; motion.y = null; drawJoy(); ensureMotionScene(); } }, 400);  // ...then back to the show
+    motion.x = 0; motion.y = 0; onJoy();                       // aim back to centre...
+    if (motion.auto) setTimeout(() => { if (!joyDown) { motion.x = null; motion.y = null; drawJoy(); } }, 400);  // ...then the show owns motion again
   }
   drawJoy();
 };
