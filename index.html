@@ -478,7 +478,9 @@ function queueScene(sc) { lastScene = sc; pending = sc; }
 // ---- Live motion: the page drives position / angle / roll itself, 20x a second ----
 // (The laser's own sweep restarts every time a scene is sent and is slow, so we don't use it.)
 let look = null, move = null, moveT0 = 0, spinAngle = 0, lastTick = performance.now();
-let strobeUntil = 0, strobeK = -1, strobeXY = [0, 0], showXY = [0, 0];
+let strobeUntil = 0, strobeK = -1, strobeXY = [0, 0], showXY = [0, 0], lastSentKey = "", lastSentAt = 0;
+const now = () => performance.now();
+const H_RANGE = 0.6;   // horizontal position byte 12 is already well left; keep the joystick inside the useful range
 const wave = {
   sin: p => Math.sin(2 * Math.PI * p),
   cos: p => Math.cos(2 * Math.PI * p),
@@ -501,34 +503,30 @@ function motionAt(sec) {
   return [x, y];
 }
 function liveScene() {
-  const now = performance.now(), dt = (now - lastTick) / 1000; lastTick = now;
-  const sec = (now - moveT0) / 1000;
-  const [x, y] = motionAt(sec);
-  spinAngle = (spinAngle + move.spin * dt * 128 + 128) % 128;            // spin = turns per second
+  // Motion = the laser's OWN built-in sweep / spin / 3D roll (tested: fastest & biggest, and it keeps
+  // flowing when the look changes). The page only changes looks + motion settings on the beat.
+  const now = performance.now();
   const sc = { ...look };
-  if (now < strobeUntil) {                                   // chop: white/colour flicker + snapping position (ref 0:44)
-    const k = Math.floor(now / 60);
+  if (now < strobeUntil) {                                   // chop: white/colour flicker + hard position snaps
+    const k = Math.floor(now / 70);
     if (k !== strobeK) { strobeK = k; strobeXY = [rnd(-1, 1), rnd(-1, 1)]; }
     sc.color = k % 2 ? C.white : look.color; sc.flow = 0;
-    sc.hmove = posByte(strobeXY[0]); sc.vmove = posByte(strobeXY[1]); sc.rot = Math.round(spinAngle) % 128;
+    sc.hmove = posByte(strobeXY[0] * H_RANGE); sc.vmove = posByte(strobeXY[1]); sc.rot = 0;
     return sc;
   }
-  showXY = [x, y];
-  sc.hmove = posByte(x); sc.vmove = posByte(y);
-  sc.rot = Math.round(spinAngle) % 128;
-  sc.hflip = move.roll ? posByte(wave.sin(sec * move.roll)) : 0;          // 3D roll
-  sc.vflip = move.rollV ? posByte(wave.cos(sec * move.rollV)) : 0;
+  sc.hmove = move.h; sc.vmove = move.v; sc.rot = move.rot; sc.hflip = move.hflip; sc.vflip = move.vflip;
   return sc;
 }
 setInterval(async () => {
   if (sending || !tx) return;
   const live = chase && look && move;
   if (!live && !pending) return;
-  const sc = live ? liveScene() : { ...pending }; pending = null;
+  let sc = live ? liveScene() : { ...pending }; pending = null;
   // Joystick AIMS the show: it offsets whatever is playing (adds to the live motion).
-  if (motion.x !== null) sc.hmove = posByte(live ? showXY[0] * .5 + motion.x : motion.x);
-  if (motion.y !== null) sc.vmove = posByte(live ? showXY[1] * .5 + motion.y : motion.y);
-  if (motion.spin !== null) { spinAngle = (spinAngle + motion.spin * 2 * .05 * 128 + 128) % 128; sc.rot = Math.round(spinAngle) % 128; }
+  if (motion.x !== null) sc.hmove = posByte(motion.x * H_RANGE);
+  if (motion.y !== null) sc.vmove = posByte(motion.y);
+  if (live) { const key = JSON.stringify(sc); if (key === lastSentKey && now() - lastSentAt < 1500) return; lastSentKey = key; lastSentAt = now(); }
+  if (motion.spin !== null) sc.rot = spinByte(motion.spin);             // laser's own spin speed
   if (motion.angle !== null) sc.rot = motion.angle;
   sending = true;
   try {
@@ -650,18 +648,23 @@ function nextSection() {
 
 const MOVES_HOT = ["fan", "tilt", "circle", "eight", "zigzag", "diag", "snap", "fan", "tilt", "circle"];
 const MOVES_COOL = ["fan", "tilt", "eight", "circle"];
-function newMove(energy, beatSec) {
-  // energy 0..1 -> speed. Rates are in cycles per second; at 1.0 a fan crosses the room ~4x a second.
-  const hot = energy > .6, kind = pick(hot ? MOVES_HOT : MOVES_COOL);
-  const fBeat = 1 / beatSec;
-  return {
-    kind, amp: rnd(.65, 1), dir: pick([-1, 1]),
-    f: kind === "snap" ? 0 : Math.min(4, pick([1, 1, 2]) * fBeat * (.4 + energy)),     // locked to the tempo, up to 4 Hz
-    x0: rnd(-.5, .5), y0: rnd(-.6, .6), sx: rnd(-1, 1), sy: rnd(-1, 1),
-    spin: (Math.random() < .25 + .6 * energy ? pick([-1, 1]) * rnd(.3, 2) * energy : 0),
-    roll: Math.random() < energy * .6 ? rnd(.5, 2.5) * energy : 0,
-    rollV: Math.random() < energy * .4 ? rnd(.5, 2) * energy : 0,
-  };
+function newMove(energy) {
+  // Built-in motion speeds (all tested on the laser): sweep 128-255, spin CW 128-191 / CCW 192-255, 3D roll 128-255.
+  const sp = k => 128 + Math.round(Math.max(0, Math.min(1, k)) * 127);
+  const kind = pick(energy > .6 ? ["both", "both", "both", "vert", "horiz", "roll", "spin"] : ["vert", "horiz", "both", "roll"]);
+  const fast = () => rnd(.55, 1) * (.4 + .6 * energy) + .1;
+  const m = { kind, h: 0, v: 0, rot: 0, hflip: 0, vflip: 0 };
+  if (kind === "both" || kind === "horiz") m.h = sp(fast());
+  if (kind === "both" || kind === "vert") m.v = sp(fast());
+  if (kind === "roll") { m.hflip = sp(fast()); m.v = sp(fast() * .7); }
+  if (kind === "spin") { m.h = sp(fast()); }
+  if (Math.random() < .2 + .6 * energy) {                                   // spin layer
+    const k = Math.round(rnd(.4, 1) * energy * 63);
+    m.rot = Math.random() < .5 ? 128 + k : 192 + k;
+  }
+  if (Math.random() < .5 * energy) m.hflip = m.hflip || sp(fast());       // 3D roll layer
+  if (Math.random() < .3 * energy) m.vflip = sp(fast());
+  return m;
 }
 function newLook(energy, animOk) {
   const sc = baseScene();
@@ -684,52 +687,46 @@ function chaseStep() {
   const animOk = chase === "mix" || (chase === "party" && sec.name === "breakdown");
   const r = Math.random();
 
-  if (!look || !move) { look = newLook(energy, animOk); move = newMove(energy, beatSec); moveT0 = performance.now(); return; }
+  if (!look || !move) { look = newLook(energy, animOk); move = newMove(energy); return; }
+  const flipSpin = m => ({ ...m, rot: m.rot >= 192 ? m.rot - 64 : m.rot >= 128 ? m.rot + 64 : 128 + 50 });   // reverse direction
+  const snapTo = m => ({ ...m, h: posByte(rnd(-1, 1) * H_RANGE), v: posByte(rnd(-1, 1)), rot: 0 });          // hard cut to a spot
 
   if (chase === "club") {
-    // Groove: moves change every 2 bars (half-time), looks on the beat, spin bursts on the snare / 4-bar phrase.
-    if (beat) look = { ...newLook(energy, animOk) };
-    if (inBar === 0 && bar % 2 === 0) { move = newMove(energy, beatSec); move.spin = 0; moveT0 = performance.now(); }
-    if (inBar === 4 && sec.name !== "breakdown") move = { ...move, spin: pick([-1, 1]) * 1.5 };
-    if (inBar === 6) move = { ...move, spin: 0 };
-    if (bar % 4 === 3 && inBar === 0) move = { ...move, spin: pick([-2, 2]), roll: 2 };
-    if (move.kind === "snap" && beat) move = { ...move, sx: rnd(-1, 1), sy: rnd(-1, 1) };
+    // Groove: motion changes every 2 bars, looks on the beat, spin burst on the snare, big spin + roll every 4 bars.
+    if (beat) look = newLook(energy, animOk);
+    if (inBar === 0 && bar % 2 === 0) { move = newMove(energy); move.rot = 0; }
+    if (inBar === 4 && sec.name !== "breakdown") move = { ...move, rot: pick([182, 246]) };
+    if (inBar === 6) move = { ...move, rot: 0 };
+    if (bar % 4 === 3 && inBar === 0) move = { ...move, rot: pick([191, 255]), hflip: 230 };
     return;
   }
-  // RAVE / PARTY / MIX: random mix on every beat - sometimes the look, sometimes the move, often both.
+  // RAVE / PARTY / MIX: random mix on every beat - look, motion, or both.
   if (sec.name === "drop") {
-    if (inBar === 0 && Math.random() < .2) {                 // sheet hold: one bar of wide slow tilting sheets (ref 0:56)
+    if (inBar === 0 && Math.random() < .2) {              // sheet hold: one bar of wide line sheets tilting up/down
       look = newLook(.3, false); look.group = G.line; look.flow = 0; look.size = 255;
-      move = { kind: "tilt", amp: .9, f: .5 / beatSec / 2, x0: rnd(-.3, .3), y0: 0, dir: 1, spin: 0, roll: rnd(0, .4), rollV: 0 };
-      moveT0 = performance.now(); holdUntilTick = t + 8; return;
+      move = { kind: "sheet", h: 0, v: 180, rot: 0, hflip: 0, vflip: 0 }; holdUntilTick = t + 8; return;
     }
     if (t < holdUntilTick) return;
-    if (beat && Math.random() < .15) strobeUntil = performance.now() + beatSec * 1000 * pick([.5, 1]);   // strobe chop
-    if (Math.random() < .8) look = newLook(energy, animOk);                                         // new look every half beat
-    if (beat) {
-      if (r > .35) { move = newMove(energy, beatSec); moveT0 = performance.now(); }
-      else move = { ...move, spin: -move.spin || pick([-1.5, 1.5]) };            // spin reversal on the kick
-    } else if (move.kind === "snap" || r < .3) {
-      move = { ...move, kind: "snap", sx: rnd(-1, 1), sy: rnd(-1, 1) };          // off-beat hard cut
-    }
+    if (beat && Math.random() < .15) strobeUntil = performance.now() + beatSec * 1000 * pick([.5, 1]);
+    if (Math.random() < .8) look = newLook(energy, animOk);              // new look every half beat
+    if (beat) move = r > .35 ? newMove(energy) : flipSpin(move);         // new motion or spin reversal on the kick
+    else if (r < .2) move = snapTo(move);                               // off-beat hard cut
   } else if (sec.name === "build") {
-    if (beat || prog > .75) { look = newLook(energy, animOk); if (r < .5 || inBar === 0) { move = newMove(energy, beatSec); moveT0 = performance.now(); } }
+    if (beat || prog > .75) { look = newLook(energy, animOk); if (r < .5 || inBar === 0) move = newMove(energy); }
   } else if (t % 8 === 0) {
-    look = newLook(energy, animOk); move = newMove(energy, beatSec); move.spin = 0; moveT0 = performance.now();
-    if (Math.random() < .5) move.kind = pick(["fan", "tilt"]);
+    look = newLook(energy, animOk); move = newMove(energy); move.rot = 0;
+    if (Math.random() < .5) { move.h = 0; move.hflip = 0; } else { move.v = 0; move.vflip = 0; }   // one slow axis
   }
 }
 
 function animStep(t) {
-  // Built-in animations drifting in a slow figure-8 / tilt; your drawings mixed in.
+  // Built-in animations with slow built-in drift; your drawings mixed in.
   if (t % 8 !== 0) return;
   const cycle = t / 8, mine = loadMine();
   if (mine.length && cycle % 5 === 4) { look = null; return sendFrame(drawFrame(strokesToPoints(pick(mine).strokes))); }
   look = baseScene();
   look.group = pick(G.anims); look.color = C[pick(["rainbow", "change", "seg4", "seg8", "white", "cyan"])]; look.flow = 30; look.size = 230;
-  move = { kind: pick(["eight", "tilt", "fan", "circle"]), amp: rnd(.3, .6), f: rnd(.15, .4), x0: 0, y0: 0, dir: 1,
-           spin: cycle % 4 === 3 ? pick([-.5, .5]) : 0, roll: 0, rollV: 0 };
-  moveT0 = performance.now();
+  move = { kind: "drift", h: pick([0, 150]), v: pick([140, 160]), rot: cycle % 4 === 3 ? pick([150, 214]) : 0, hflip: 0, vflip: 0 };
 }
 // ---------- Phone mic beat detection ----------
 // Low-band energy vs. its running average; a kick = jump above 1.35x average (min 280 ms apart).
