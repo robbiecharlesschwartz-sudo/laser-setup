@@ -151,6 +151,9 @@
       <button class="show" data-show="classic"><i>D</i><b>Classic</b><span>Every built-in pattern.</span></button>
       <button class="show wide" data-show="party"><i>E</i><b>Party Set</b><span>Pre-made arc on loop — breakdown, build, drop.</span></button>
       <button class="show" data-show="mix"><i>F</i><b>Rave + Anim</b><span>Lasers' own mic: beams and animations.</span></button>
+      <button class="show" data-show="burst"><i>I</i><b>Bursts</b><span>Hard beam bursts on every beat, snapping around the room.</span></button>
+      <button class="show" data-show="sweep"><i>J</i><b>Side Sweep</b><span>Wide fans whipping side to side, tempo-locked.</span></button>
+      <button class="show wide" data-show="dom"><i>K</i><b>Side + Burst Set</b><span>Tech-house style: side-to-side sweeps build into burst drops, then back.</span></button>
       <button class="show" data-show="anim"><i>G</i><b>Animations</b><span>Built-in drawings in motion.</span></button>
       <button class="show wide" id="staticTile" type="button"><i>H</i><b>Static</b><span>Pick a still shape from the picture menu: joined line, circle, star, square…</span></button>
     </div>
@@ -183,6 +186,11 @@
       <button id="springBtn" class="on">Spring to center</button>
       <button id="autoBtn" class="on">Auto motion: ON</button>
     </div>
+    <label style="margin-top:14px"><span>Ceiling edge (lowest beam height)</span><span id="ceilVal"></span></label>
+    <input type="range" id="ceilEdge" min="-100" max="100" step="1" aria-label="Ceiling limit">
+    <label style="margin-top:10px"><span>Crowd limit (keep above heads)</span><span id="crowdVal"></span></label>
+    <input type="range" id="crowdEdge" min="-100" max="100" step="1" aria-label="Crowd limit">
+    <p class="note">With a 10.5 ft ceiling there is only a thin safe band under it: keep both lines close together near the ceiling. Drag each slider and watch the still line: put one right where the ceiling ends, the other well above the crowd's heads. Aim, Club, Party and the new Bursts / Side Sweep modes stay between the two. Keep beams above head height; never aim them at faces. Rave, Lines, Classic and Animations play the lasers' own patterns and can't be limited.</p>
     <div class="divider"></div>
     <label><span>Spin</span><span id="spinVal">0</span></label>
     <input type="range" id="spin" min="-100" max="100" step="1" value="0" list="detent" aria-label="Spin, left counter-clockwise, right clockwise">
@@ -279,6 +287,9 @@ const SHOWS = {
   party:   { label: "PARTY SHOW", group: 7, pick: null, sound: true, color: 3, speed: 255, chase: "party" },
   mix:     { label: "RAVE + ANIMATIONS", group: 7, pick: null, sound: true, color: 9, speed: 255, chase: "mix" },
   anim:    { label: "ANIMATIONS", group: 7, pick: null, sound: false, color: 9, speed: 255, chase: "anim" },
+  burst:   { label: "BURSTS",     group: 7, pick: null, sound: false, color: 9, speed: 255, chase: "burst" },
+  sweep:   { label: "SIDE SWEEP", group: 7, pick: null, sound: false, color: 9, speed: 255, chase: "sweep" },
+  dom:     { label: "SIDE + BURST SET", group: 7, pick: null, sound: false, color: 9, speed: 255, chase: "dom" },
 };
 
 let dev, tx, rxHex = "", settings = null, active = null, busy = false;
@@ -620,7 +631,7 @@ const sweepByte = v => v <= 0.02 ? 64 : 128 + Math.round(Math.min(1, v) * 127); 
 // Position bytes 0-127 are CIRCULAR on this laser: 0 = centre, ~32 = one end, 64 = centre, ~96 = other end, 127 -> centre.
 // So offset d (-1..1) = sin(2*pi*b/128)  =>  b = asin(d) / (2*pi) * 128 (wrapped).
 const clamp1 = v => Math.max(-1, Math.min(1, v));
-const posByte = v => Math.round((Math.asin(clamp1(v)) / (2 * Math.PI) * 128 + 128) % 128);
+const posByte = v => Math.round(Math.asin(clamp1(v)) / (2 * Math.PI) * 128 + 128) % 128;
 function baseScene() {
   return { graph: rnd(0, 255), group: G.line, color: C.seg4, flow: 60, size: 220, zoom: 0, rot: 0, hflip: 0, vflip: 0, hmove: 64, vmove: 64, wave: 0 };
 }
@@ -699,7 +710,7 @@ setInterval(async () => {
   const sc = { ...pending }; pending = null;
   // Manual overrides (joystick aims, spin dial) win over the show for their axes only.
   if (motion.x !== null) sc.hmove = posByte(-motion.x * H_RANGE);        // verified: 12 = left, 116 = right
-  if (motion.y !== null) sc.vmove = posByte(Math.max(-.3, motion.y));      // safety: limited downward aim
+  if (motion.y !== null) sc.vmove = posByte(vClamp(motion.y));            // never below the ceiling edge
   if (motion.spin !== null) sc.rot = spinByte(motion.spin);
   if (motion.angle !== null) sc.rot = motion.angle;
   try {
@@ -776,8 +787,11 @@ function drawJoy(x = motion.x ?? 0, y = motion.y ?? 0, held = motion.x !== null)
   g.beginPath(); g.moveTo(30, 300); g.lineTo(570, 300); g.moveTo(300, 30); g.lineTo(300, 570); g.stroke();
   g.fillStyle = "#4a4f58"; g.font = "20px JetBrains Mono, monospace"; g.textAlign = "center";
   g.fillText("UP", 300, 62); g.fillText("DOWN", 300, 556); g.fillText("L", 52, 308); g.fillText("R", 548, 308);
+  g.strokeStyle = "rgba(255,59,92,.6)"; g.setLineDash && g.setLineDash([10, 8]);
+  for (const e of [typeof ceilEdge === "number" ? ceilEdge : -.3, typeof crowdEdge === "number" ? crowdEdge : .4]) { const yy = 300 - e * R; g.beginPath(); g.moveTo(30, yy); g.lineTo(570, yy); g.stroke(); }
+  g.setLineDash && g.setLineDash([]);
   g.fillStyle = held ? "#00e5ff" : "#2a2e35";
-  g.beginPath(); g.arc(300 + x * R, 300 - y * R, 46, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(300 + x * R, 300 - (typeof vClamp === "function" ? vClamp(y) : y) * R, 46, 0, Math.PI * 2); g.fill();
 }
 // Global X/Y position adjust (LightElf "xyCnf"): 10111213 [FF=don't save][auto][phase][Xcoarse][Xfine][Ycoarse][Yfine] pad 14151617.
 // Shifts the whole output in any mode. Centre = the laser's current values (settings bytes 53-58).
@@ -803,7 +817,7 @@ function aimGlobal(x, y) {
 // Aim uses the VERIFIED Program-mode positions (vertical 32 up / 96 down, horizontal 12 left / 116 right).
 // The global "position" command was tested and moves nothing, so it is not used.
 let aimActive = false, aimReturn = null;
-function engineShow() { return chase === "club"; }
+function engineShow() { return chase === "club"; }   // burst / sweep / dom place their own heights; aim takes over via takeover()
 function takeover() {                      // non-engine show: pause it and show an aimable beam scene
   if (engineShow() || aimActive) return;
   aimActive = true; aimReturn = blackedOut ? null : active;
@@ -817,6 +831,12 @@ function releaseTakeover() {
   if (aimReturn) startShow(aimReturn); else { pending = null; }
 }
 let drawingScene = null;
+// Ceiling edge: lowest allowed beam height (-1 bottom .. +1 top). Saved on this device.
+let ceilEdge = (() => { try { const v = parseFloat(localStorage.getItem("ceilEdge")); return isNaN(v) ? -.3 : v; } catch { return -.3; } })();
+let crowdEdge = (() => { try { const v = parseFloat(localStorage.getItem("crowdEdge")); return isNaN(v) ? .1 : v; } catch { return .1; } })();   // narrow default: 10.5 ft ceiling leaves little room above heads
+// The shows and Aim stay inside the band between the two edges, whichever direction each is on the joystick.
+const bandLo = () => Math.min(ceilEdge, crowdEdge), bandHi = () => Math.max(ceilEdge, crowdEdge);
+const vClamp = y => Math.max(bandLo(), Math.min(bandHi(), y));
 function onJoy() {
   if (!settings || blackedOut && !aimActive && !joyDown) return;
   if (drawingScene && !chase) { queueScene({ ...drawingScene }); return; }     // move the drawing (sender applies the position)
@@ -879,6 +899,21 @@ function accent(extra, ms) {               // short Program-mode accent, then th
   setTimeout(() => { if (back && !chase && !aimActive) startShow(back); }, ms);
 }
 drawJoy();
+function edgePreview(which, v) {
+  if (which === "ceil") ceilEdge = v; else crowdEdge = v;
+  $("ceilVal").textContent = Math.round(ceilEdge * 100); $("crowdVal").textContent = Math.round(crowdEdge * 100); drawJoy();
+  try { localStorage.setItem("ceilEdge", String(ceilEdge)); localStorage.setItem("crowdEdge", String(crowdEdge)); } catch {}
+  if (settings && tx) {                                   // live preview: a still horizontal line at that edge
+    if (!aimActive) { aimActive = true; aimReturn = active; stopChase(); }
+    lastScene = { ...baseScene(), graph: 0, group: G.line, color: C.white, size: 255, hmove: 0, rot: 0, vmove: posByte(v) };
+    queueScene({ ...lastScene });
+  }
+}
+$("ceilEdge").value = Math.round(ceilEdge * 100); $("crowdEdge").value = Math.round(crowdEdge * 100);
+$("ceilVal").textContent = Math.round(ceilEdge * 100); $("crowdVal").textContent = Math.round(crowdEdge * 100);
+$("ceilEdge").oninput = e => edgePreview("ceil", +e.target.value / 100);
+$("crowdEdge").oninput = e => edgePreview("crowd", +e.target.value / 100);
+$("ceilEdge").onchange = $("crowdEdge").onchange = () => setTimeout(releaseTakeover, 1200);
 
 // ---- Natural song sections: drop / build / breakdown, chosen at random like a real set ----
 // ===================== CHOREOGRAPHY ENGINE =====================
@@ -1084,7 +1119,11 @@ function buildScene() {
     ? .45 + .9 * audio.mid + Math.max(0, (audio.rising || 0) * 6)           // music: mids drive speed, builds push it up
     : .45 + .75 * speedWave();                                                // no music input: irregular speed waves
   sc.hmove = spd(Math.min(1, show.m.h * wv)) || 0;
-  sc.vmove = spd(Math.min(1, show.m.v * wv)) || (f.vpos ? posByte(Math.max(0, f.vpos)) : 0);
+  // Built-in vertical sweep covers the full range (below the ceiling), so it isn't used: vertical motion becomes
+  // a page-driven drift between the ceiling edge and the top.
+  { const lo = bandLo(), hi = bandHi(), mid = (lo + hi) / 2, amp = (hi - lo) / 2;
+    const drift = show.m.v ? Math.sin(performance.now() / 1000 * (1.2 + 2.5 * show.m.v)) * amp * .9 : 0;
+    sc.vmove = posByte(f.vpos != null ? vClamp(f.vpos) : mid + drift); }
   sc.rot = rotB(Math.max(-1, Math.min(1, show.m.rot * wv)));
   sc.hflip = spd(show.m.hflip) || (f.faceOn ? 32 : 0);
   sc.vflip = spd(show.m.vflip);
@@ -1168,8 +1207,45 @@ function sendScene(sc) {                      // one-off Program scene (motion a
   enterProgram(sc).catch(() => {});
 }
 
+// ---------- Dom-style modes (all inside the height band; fan patterns from the line table) ----------
+const BURST_PATS = [39, 25, 21, 17, 12, 23, 22, 18];
+const SIDE_PATS = [25, 39, 21, 19, 20];
+const DOM_PALS = [["red", "white"], ["cyan", "pink"], ["green", "blue"], ["pink", "white"], ["blue", "cyan"]];
+let domPal = DOM_PALS[0], burstTimer = null;
+function bandPos(f = Math.random()) { return posByte(bandLo() + (bandHi() - bandLo()) * f); }
+function burstStep(t, drop = false) {
+  const beat = t % 2 === 0, bar = Math.floor(t / 8);
+  if (!beat) return;
+  if (t % 16 === 0) domPal = pick(DOM_PALS.filter(p => p !== domPal));
+  const bi = Math.floor(t / 2), col = C[domPal[bi % 2]];
+  const sc = { ...baseScene(), graph: 4 * pick(BURST_PATS), group: G.line, color: live.color ?? col, flow: 110, size: 255,
+               hmove: 0, vmove: bandPos(), rot: Math.random() < .4 ? (Math.random() < .5 ? 128 : 192) + 50 : 0,
+               hflip: Math.random() < .3 ? 200 : 0 };
+  queueScene(sc);
+  if (burstTimer) clearTimeout(burstTimer);
+  if (!drop) burstTimer = setTimeout(() => { if (chase === "burst" || chase === "dom") queueScene({ ...sc, size: 0 }); }, Math.max(90, (audio.on && audio.locked ? beatGap : 60000 / BPM) * .28));   // short flash, then dark until the next beat
+}
+function sweepStep(t) {
+  const beat = t % 2 === 0, bar = Math.floor(t / 8);
+  if (!beat && t % 8 !== 4) return;
+  if (t % 16 === 0) domPal = pick(DOM_PALS.filter(p => p !== domPal));
+  const bi = Math.floor(t / 2), col = C[domPal[bi % 2]];
+  const dir = (Math.floor(t / 16) % 2) ? 1 : -1;
+  const f = .5 + .5 * Math.sin(t / 8 * Math.PI / 2 * (1 + (bar % 3) * .5));              // height drifts through the band
+  queueScene({ ...baseScene(), graph: 4 * SIDE_PATS[Math.floor(bar / 2) % SIDE_PATS.length], group: G.line, color: live.color ?? col, flow: 100,
+               size: 255, hmove: 128 + Math.round(127 * Math.min(1, .8 + .2 * (audio.on ? audio.mid : 1))), vmove: bandPos(f),
+               rot: dir > 0 ? 0 : 0, hflip: 0 });
+}
+function domStep(t) {                                    // 8 bars sweeping, 4 bars bursting (the drop), repeat
+  const bar = Math.floor(t / 8) % 12;
+  if (bar < 8) sweepStep(t); else burstStep(t, bar === 11);
+}
+
 function chaseStep() {
   if (audio.on && audio.silent) return;                 // lights follow the music: nothing while it's quiet
+  if (chase === "burst") return burstStep(step++);
+  if (chase === "sweep") return sweepStep(step++);
+  if (chase === "dom") return domStep(step++);
   const t = step++;                                   // half-beat ticks; 8 per bar
   const beat = t % 2 === 0, inBar = t % 8, bar = Math.floor(t / 8);
   if (t === 0) { show.partyIdx = 0; show.history = []; show.sec = { name: chase === "club" ? "breakdown" : "build", left: 4, total: 4 };
@@ -1311,7 +1387,7 @@ function stopListening() {
 }
 function onAudioBeat() {                     // what a beat does depends on the show
   if (audio.silent) return;
-  if (chase === "club") { chaseStep(); setTimeout(() => chase === "club" && chaseStep(), beatGap / 2); }
+  if (chase === "club" || chase === "burst" || chase === "sweep" || chase === "dom") { const c = chase; chaseStep(); setTimeout(() => chase === c && chaseStep(), beatGap / 2); }
   else if (chase === "party") partyBeat();
   else if (micShow() && !txBusy) {                       // Rave: colour on every beat, new beam set every 4 beats
     micColor = pick(MIC_COLORS.filter(c => c !== micColor));
@@ -1358,7 +1434,7 @@ function startChase(name) {
   stopChase();
   chase = name; step = 0; lastSection = "";
   const ms = 60000 / BPM / 2;                          // half-beat ticks (fixed house tempo)
-  chaseTimer = setInterval(() => { if (chase === "club" && audio.on && performance.now() - lastBeatAt < 1500) return; chaseStep(); }, ms);   // only Club is stepped by heard beats
+  chaseTimer = setInterval(() => { if (["club", "burst", "sweep", "dom"].includes(chase) && audio.on && audio.locked && performance.now() - lastBeatAt < 1500) return; chaseStep(); }, ms);   // only Club is stepped by heard beats
   try { navigator.wakeLock && navigator.wakeLock.request("screen").then(l => wakeLock = l).catch(() => {}); } catch {}
 }
 let chaseTimer = null;
@@ -1467,7 +1543,8 @@ function partyLook(st, i) {
   if (audio.on && performance.now() < audio.flashUntil) col = C.white;
   const k = Math.min(1.2, live.speed) * (audio.on ? .5 + .8 * audio.mid : .55 + .65 * speedWave());
   const sc = { ...baseScene(), graph: 4 * (st.p || 0), group: G.line, color: col, flow: st.c === "rainbow" ? 127 : 110, size: 255,
-               hmove: SP((st.h || 0) * k), vmove: SP((st.v || 0) * k) || (st.vpos ? posByte(st.vpos) : 0),
+               hmove: SP((st.h || 0) * k),
+               vmove: posByte(st.vpos != null ? vClamp(st.vpos) : (bandLo() + bandHi()) / 2 + (st.v ? Math.sin(performance.now() / 1000 * (1.5 + 3 * st.v)) * (bandHi() - bandLo()) / 2 * .9 : 0)),
                rot: ROT((st.rot || 0) * k), hflip: 0, vflip: st.vflipPos || 0, wave: st.wave || 0 };
   if (st.rings) {
     const toIdx = c => ({ [C.red]: 1, [C.green]: 2, [C.blue]: 3, [C.yellow]: 4, [C.cyan]: 5, [C.pink]: 6, [C.white]: 7 })[c] || 5;
@@ -1490,7 +1567,7 @@ function partyTick() {                     // every 100 ms: advance steps on tim
     const size = Math.round(st.size[0] + (st.size[1] - st.size[0]) * t);
     if (partyRamp === null || Math.abs(size - partyRamp) >= 12) { partyRamp = size; queueScene({ ...partyLook(st, partyStep), size }); }
   }
-  if ((st.h || st.v || st.rot) && !st.size && ++partyWaveTick % 4 === 0) queueScene({ ...partyLook(st, partyStep), size: partyRamp ?? 255 });   // speed wave
+  if ((st.h || st.v || st.rot) && !st.size && ++partyWaveTick % (st.v ? 2 : 4) === 0) queueScene({ ...partyLook(st, partyStep), size: partyRamp ?? 255 });   // speed wave
   if (audio.on) {                                                              // bass pulse on the size
     const p = Math.exp(-(now - audio.pulseAt) / 200);
     if (p > .2 && ++partyWaveTick % 2 === 0) queueScene({ ...partyLook(st, partyStep), size: Math.round(Math.min(255, (partyRamp ?? 255) * (.7 + .3 * p))) });
