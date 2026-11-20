@@ -1040,7 +1040,7 @@ function newFormation(sectionChange) {
   const f = F[show.form], e = sectionEnergy();
   // User feedback: previous speed = the slowest it should ever get. Floor at ~55%, climbing to max with energy.
   const speed = chase === "club"
-    ? (k => k ? .4 + .35 * Math.min(1, k) : 0)                                 // CLUB: quicker, still controlled (wave-modulated live)
+    ? (k => k ? .5 + .4 * Math.min(1, k) : 0)                                  // CLUB: quick, still controlled
     : (k => k ? Math.min(.92, .45 + .5 * Math.min(1, k * (.7 + .6 * e))) : 0);
   show.tgt = { h: speed(f.m.h), v: speed(f.m.v), hflip: speed(f.m.hflip), vflip: speed(f.m.vflip),
                rot: f.m.rot ? show.spinSign * speed(f.m.rot) : 0 };
@@ -1191,7 +1191,7 @@ function chaseStep() {
   // Build: speeds keep rising inside the phrase; last half bar goes dark for anticipation.
   if (S === "build") {
     const ramp = chase === "club" ? .35 + .2 * prog : .5 + .5 * prog;      // CLUB builds only lift gently
-    for (const k of ["h", "v", "hflip"]) if (show.tgt[k]) show.tgt[k] = Math.min(chase === "club" ? .75 : 1, Math.max(show.tgt[k], ramp));
+    for (const k of ["h", "v", "hflip"]) if (show.tgt[k]) show.tgt[k] = Math.min(chase === "club" ? .85 : 1, Math.max(show.tgt[k], ramp));
     if (chase !== "club" && show.sec.left === 1 && inBar >= 6) { if (inBar === 6) blackout(); return; }
   }
   // Breakdowns settle quickly at first (contrast after a drop), then glide.
@@ -1202,7 +1202,7 @@ function chaseStep() {
   if (beat) {
     const isSnare = inBar === 2 || inBar === 6;
     if (chase === "club") {
-      if (inBar === 0) show.colIdx++;                                          // colour breathes per bar
+      show.colIdx++;                                                           // colour on every beat
       if (inBar === 0 && bar % 2 === 1 && F[show.form].pats) {                 // every 2 bars: another design from the same family
         const ps = F[show.form].pats.filter(p => 4 * p !== show.graph); if (ps.length) show.graph = 4 * pick(ps);
       }
@@ -1231,9 +1231,31 @@ const BPM = 128;
 // (bass 20-200 Hz, mids 200-2000 Hz, highs 2000-8000 Hz) each normalised against its own recent peak,
 // beats from bass onsets; bass -> pulse/size, mids -> motion speed, highs over a flash threshold -> flashes,
 // beats -> colour/pattern steps, looks rotate on a timer.
-const audio = { on: false, low: 0, mid: 0, high: 0, beats: 0, flashThr: .85, lookSecs: 16, pulseAt: 0, flashUntil: 0, silent: false,
+const audio = { locked: false, on: false, low: 0, mid: 0, high: 0, beats: 0, flashThr: .85, lookSecs: 16, pulseAt: 0, flashUntil: 0, silent: false,
                 shortLow: 0, longLow: 0, drop: false, lastDropAt: 0 };
 let mic = null, lastBeatAt = 0, beatGap = 60000 / BPM, micLevel = 100;
+// ---- Tempo lock: estimate the beat period from recent onsets; accept it when >= 4 onsets fit its grid.
+const LATENCY = 70;                           // ms sent early (BLE + laser response)
+let onsets = [], lastOnset = 0, nextBeat = 0;
+function estimatePeriod() {
+  if (onsets.length < 5) return null;
+  let best = null, bestScore = 0;
+  for (let p = 300; p <= 1000; p += 5) {      // 60-200 BPM
+    const ref = onsets[onsets.length - 1]; let score = 0;
+    for (const o of onsets) { const k = Math.round((ref - o) / p); if (k > 0 && Math.abs(ref - o - k * p) < p * .07) score++; }
+    if (score > bestScore || (score === bestScore && best && Math.abs(p - beatGap) < Math.abs(best - beatGap))) { bestScore = score; best = p; }
+  }
+  return bestScore >= 4 ? best : null;
+}
+function onOnset(t) {
+  const p = estimatePeriod();
+  if (!p) return;
+  if (!audio.locked) { audio.locked = true; beatGap = p; nextBeat = t + p; return; }
+  // Phase-lock: an onset near the predicted beat nudges the clock; off-grid onsets (noise) are ignored.
+  const prev = nextBeat - beatGap, err = t - prev, err2 = t - nextBeat;
+  const e = Math.abs(err) < Math.abs(err2) ? err : err2;
+  if (Math.abs(e) < beatGap * .15) { nextBeat += e * .35; beatGap = beatGap * .8 + p * .2; }
+}
 async function startListening() {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
   const ctx = new (window.AudioContext || window.webkitAudioContext)(); try { await ctx.resume(); } catch {}
@@ -1262,11 +1284,14 @@ async function startListening() {
       loudest = Math.max(loudest, db - S.floor);
     }
     // Beat = sharp rise in the bass band (onset), adaptive to sensitivity, min 260 ms apart.
-    // Very sensitive: small bass rises count (scaled by Sensitivity), 230 ms min gap; tempo re-locks within ~2 beats.
-    if (st.low.jump > .2 - .14 * sens && audio.low > .38 && now - lastBeatAt > 230) {
-      const gap = now - lastBeatAt; if (gap > 230 && gap < 1300) beatGap = Math.abs(gap - beatGap) > beatGap * .15 ? beatGap * .4 + gap * .6 : beatGap * .75 + gap * .25;
-      lastBeatAt = now; audio.beats++; audio.pulseAt = now; onAudioBeat();
+    // Onset candidates (bass rises). They only drive lights through the TEMPO LOCK below, so random noises are ignored.
+    if (st.low.jump > .28 - .12 * sens && audio.low > .45 && now - lastOnset > 200) { lastOnset = now; onsets.push(now); onOnset(now); }
+    while (onsets.length && now - onsets[0] > 6000) onsets.shift();
+    // Beat clock: fire slightly early to cover Bluetooth latency, so the lasers land ON the beat.
+    if (audio.locked && now >= nextBeat - LATENCY) {
+      lastBeatAt = nextBeat; nextBeat += beatGap; audio.beats++; audio.pulseAt = now; onAudioBeat();
     }
+    if (audio.locked && now - lastOnset > 4 * beatGap) audio.locked = false;     // music stopped / lost the beat
     if (audio.high * (.6 + .6 * sens) > audio.flashThr && now > audio.flashUntil + 250) audio.flashUntil = now + 120;
     // Silence gate: everything quiet (< 8 dB over the floor) for 2 s -> silent.
     if (loudest > 8) { quietSince = now; if (audio.silent) { audio.silent = false; onSoundBack(); } }
@@ -1288,7 +1313,11 @@ function onAudioBeat() {                     // what a beat does depends on the 
   if (audio.silent) return;
   if (chase === "club") { chaseStep(); setTimeout(() => chase === "club" && chaseStep(), beatGap / 2); }
   else if (chase === "party") partyBeat();
-  else if (micShow() && audio.beats % 4 === 0 && !txBusy) { micColor = pick(MIC_COLORS.filter(c => c !== micColor)); sendFrame(micFrame()); }   // Rave: new colour every 4 beats
+  else if (micShow() && !txBusy) {                       // Rave: colour on every beat, new beam set every 4 beats
+    micColor = pick(MIC_COLORS.filter(c => c !== micColor));
+    if (audio.beats % 4 === 0) micSet = pick(Object.keys(MIC_SETS).filter(k => k !== micSet && (chase === "mix" || k !== "anim")));
+    sendFrame(micFrame());
+  }
 }
 // Lights follow the music: silence (2 s) -> lasers off; sound back -> the show resumes.
 function onSilence() {
@@ -1322,7 +1351,7 @@ setInterval(() => {
   const dot = document.getElementById("beatDot");
   if (dot) dot.classList.toggle("hit", audio.on && performance.now() - lastBeatAt < 120);
   const bpm = document.getElementById("bpmRead");
-  if (bpm) bpm.textContent = audio.on && performance.now() - lastBeatAt < 3000 ? Math.round(60000 / beatGap) + " BPM" : audio.on ? "listening…" : "off";
+  if (bpm) bpm.textContent = audio.on && audio.locked ? Math.round(60000 / beatGap) + " BPM · locked" : audio.on ? "finding the beat…" : "off";
 }, 50);
 
 function startChase(name) {
