@@ -123,7 +123,7 @@
   <header class="top">
     <div class="brand">
       <h1>Laser Console</h1>
-      <span class="sub">2 × TD5322A · Bluetooth · build 32 (ceiling lowered)</span>
+      <span class="sub">2 × TD5322A · Bluetooth · build 33 (ceiling clearance)</span>
     </div>
     <span class="pill" id="pill">Offline</span>
   </header>
@@ -788,7 +788,7 @@ function drawJoy(x = motion.x ?? 0, y = motion.y ?? 0, held = motion.x !== null)
   g.fillStyle = "#4a4f58"; g.font = "20px JetBrains Mono, monospace"; g.textAlign = "center";
   g.fillText("UP", 300, 62); g.fillText("DOWN", 300, 556); g.fillText("L", 52, 308); g.fillText("R", 548, 308);
   g.strokeStyle = "rgba(255,59,92,.6)"; g.setLineDash && g.setLineDash([10, 8]);
-  for (const e of [typeof ceilEdge === "number" ? ceilEdge : -.2, typeof crowdEdge === "number" ? crowdEdge : -.5]) { const yy = 300 - e * R; g.beginPath(); g.moveTo(30, yy); g.lineTo(570, yy); g.stroke(); }
+  for (const e of [typeof ceilEdge === "number" ? ceilEdge : -.36, typeof crowdEdge === "number" ? crowdEdge : -.5]) { const yy = 300 - e * R; g.beginPath(); g.moveTo(30, yy); g.lineTo(570, yy); g.stroke(); }
   g.setLineDash && g.setLineDash([]);
   g.fillStyle = held ? "#00e5ff" : "#2a2e35";
   g.beginPath(); g.arc(300 + x * R, 300 - (typeof vClamp === "function" ? vClamp(y) : y) * R, 46, 0, Math.PI * 2); g.fill();
@@ -832,10 +832,11 @@ function releaseTakeover() {
 }
 let drawingScene = null;
 // Ceiling edge: lowest allowed beam height (-1 bottom .. +1 top). Saved on this device.
-let ceilEdge = (() => { try { const v = parseFloat(localStorage.getItem("ceilEdge2")); return isNaN(v) ? -.2 : v; } catch { return -.2; } })();   // TOP barrier: ceiling is on the UP side; beams stop touching it near -0.16
-let crowdEdge = (() => { try { const v = parseFloat(localStorage.getItem("crowdEdge2")); return isNaN(v) ? -.5 : v; } catch { return -.5; } })();   // LOWEST beam: narrow band, 10.5 ft ceiling leaves little room above heads
+let ceilEdge = (() => { try { const v = parseFloat(localStorage.getItem("ceilEdge3")); return isNaN(v) ? -.36 : v; } catch { return -.36; } })();   // TOP barrier: ceiling is on the UP side; beams stop touching it near -0.16
+let crowdEdge = (() => { try { const v = parseFloat(localStorage.getItem("crowdEdge3")); return isNaN(v) ? -.5 : v; } catch { return -.5; } })();   // LOWEST beam: narrow band, 10.5 ft ceiling leaves little room above heads
 // The shows and Aim stay inside the band between the two edges, whichever direction each is on the joystick.
-const bandLo = () => Math.min(ceilEdge, crowdEdge), bandHi = () => Math.max(ceilEdge, crowdEdge);
+const SAFE_FLOOR = -0.5;                                   // never lower than this, whatever the sliders say
+const bandLo = () => Math.max(SAFE_FLOOR, Math.min(ceilEdge, crowdEdge)), bandHi = () => Math.max(bandLo(), Math.max(ceilEdge, crowdEdge));
 const vClamp = y => Math.max(bandLo(), Math.min(bandHi(), y));
 function onJoy() {
   if (!settings || blackedOut && !aimActive && !joyDown) return;
@@ -902,7 +903,7 @@ drawJoy();
 function edgePreview(which, v) {
   if (which === "ceil") ceilEdge = v; else crowdEdge = v;
   $("ceilVal").textContent = Math.round(ceilEdge * 100); $("crowdVal").textContent = Math.round(crowdEdge * 100); drawJoy();
-  try { localStorage.setItem("ceilEdge2", String(ceilEdge)); localStorage.setItem("crowdEdge2", String(crowdEdge)); } catch {}
+  try { localStorage.setItem("ceilEdge3", String(ceilEdge)); localStorage.setItem("crowdEdge3", String(crowdEdge)); } catch {}
   if (settings && tx) {                                   // live preview: a still horizontal line at that edge
     if (!aimActive) { aimActive = true; aimReturn = active; stopChase(); }
     lastScene = { ...baseScene(), graph: 0, group: G.line, color: C.white, size: 255, hmove: 0, rot: 0, vmove: posByte(v) };
@@ -1106,7 +1107,7 @@ function buildScene() {
   const L = show.layers || new Set();
   const target = (L.has("expand") || f.drawn) ? expansionNow() : 1;
   show.sizeNow = show.sizeNow == null ? target : show.sizeNow + (target - show.sizeNow) * (show.exp === "kick" || show.exp === "snap" ? .6 : .3);
-  sc.size = Math.round(255 * show.sizeNow);
+  sc.size = Math.round(255 * show.sizeNow * (chase === "club" ? .72 : 1));      // Club: smaller pattern so outer beams stay under the ceiling
   if (audio.on && chase === "club") {                                          // bass hit: pulse outward, ease back (heartbeat)
     const p = Math.exp(-(performance.now() - audio.pulseAt) / 220);
     sc.size = Math.round(Math.min(255, sc.size * (.72 + .28 * Math.max(p, audio.low))));
