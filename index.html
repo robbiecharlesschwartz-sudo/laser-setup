@@ -123,7 +123,7 @@
   <header class="top">
     <div class="brand">
       <h1>Laser Console</h1>
-      <span class="sub">2 × TD5322A · Bluetooth · build 31 (height band)</span>
+      <span class="sub">2 × TD5322A · Bluetooth · build 32 (ceiling lowered)</span>
     </div>
     <span class="pill" id="pill">Offline</span>
   </header>
@@ -186,9 +186,9 @@
       <button id="springBtn" class="on">Spring to center</button>
       <button id="autoBtn" class="on">Auto motion: ON</button>
     </div>
-    <label style="margin-top:14px"><span>Ceiling edge (lowest beam height)</span><span id="ceilVal"></span></label>
+    <label style="margin-top:14px"><span>Ceiling limit (highest beam)</span><span id="ceilVal"></span></label>
     <input type="range" id="ceilEdge" min="-100" max="100" step="1" aria-label="Ceiling limit">
-    <label style="margin-top:10px"><span>Crowd limit (keep above heads)</span><span id="crowdVal"></span></label>
+    <label style="margin-top:10px"><span>Lowest beam (keep above heads)</span><span id="crowdVal"></span></label>
     <input type="range" id="crowdEdge" min="-100" max="100" step="1" aria-label="Crowd limit">
     <p class="note">With a 10.5 ft ceiling there is only a thin safe band under it: keep both lines close together near the ceiling. Drag each slider and watch the still line: put one right where the ceiling ends, the other well above the crowd's heads. Aim, Club, Party and the new Bursts / Side Sweep modes stay between the two. Keep beams above head height; never aim them at faces. Rave, Lines, Classic and Animations play the lasers' own patterns and can't be limited.</p>
     <div class="divider"></div>
@@ -788,7 +788,7 @@ function drawJoy(x = motion.x ?? 0, y = motion.y ?? 0, held = motion.x !== null)
   g.fillStyle = "#4a4f58"; g.font = "20px JetBrains Mono, monospace"; g.textAlign = "center";
   g.fillText("UP", 300, 62); g.fillText("DOWN", 300, 556); g.fillText("L", 52, 308); g.fillText("R", 548, 308);
   g.strokeStyle = "rgba(255,59,92,.6)"; g.setLineDash && g.setLineDash([10, 8]);
-  for (const e of [typeof ceilEdge === "number" ? ceilEdge : -.3, typeof crowdEdge === "number" ? crowdEdge : .4]) { const yy = 300 - e * R; g.beginPath(); g.moveTo(30, yy); g.lineTo(570, yy); g.stroke(); }
+  for (const e of [typeof ceilEdge === "number" ? ceilEdge : -.2, typeof crowdEdge === "number" ? crowdEdge : -.5]) { const yy = 300 - e * R; g.beginPath(); g.moveTo(30, yy); g.lineTo(570, yy); g.stroke(); }
   g.setLineDash && g.setLineDash([]);
   g.fillStyle = held ? "#00e5ff" : "#2a2e35";
   g.beginPath(); g.arc(300 + x * R, 300 - (typeof vClamp === "function" ? vClamp(y) : y) * R, 46, 0, Math.PI * 2); g.fill();
@@ -832,8 +832,8 @@ function releaseTakeover() {
 }
 let drawingScene = null;
 // Ceiling edge: lowest allowed beam height (-1 bottom .. +1 top). Saved on this device.
-let ceilEdge = (() => { try { const v = parseFloat(localStorage.getItem("ceilEdge")); return isNaN(v) ? -.3 : v; } catch { return -.3; } })();
-let crowdEdge = (() => { try { const v = parseFloat(localStorage.getItem("crowdEdge")); return isNaN(v) ? .1 : v; } catch { return .1; } })();   // narrow default: 10.5 ft ceiling leaves little room above heads
+let ceilEdge = (() => { try { const v = parseFloat(localStorage.getItem("ceilEdge2")); return isNaN(v) ? -.2 : v; } catch { return -.2; } })();   // TOP barrier: ceiling is on the UP side; beams stop touching it near -0.16
+let crowdEdge = (() => { try { const v = parseFloat(localStorage.getItem("crowdEdge2")); return isNaN(v) ? -.5 : v; } catch { return -.5; } })();   // LOWEST beam: narrow band, 10.5 ft ceiling leaves little room above heads
 // The shows and Aim stay inside the band between the two edges, whichever direction each is on the joystick.
 const bandLo = () => Math.min(ceilEdge, crowdEdge), bandHi = () => Math.max(ceilEdge, crowdEdge);
 const vClamp = y => Math.max(bandLo(), Math.min(bandHi(), y));
@@ -902,7 +902,7 @@ drawJoy();
 function edgePreview(which, v) {
   if (which === "ceil") ceilEdge = v; else crowdEdge = v;
   $("ceilVal").textContent = Math.round(ceilEdge * 100); $("crowdVal").textContent = Math.round(crowdEdge * 100); drawJoy();
-  try { localStorage.setItem("ceilEdge", String(ceilEdge)); localStorage.setItem("crowdEdge", String(crowdEdge)); } catch {}
+  try { localStorage.setItem("ceilEdge2", String(ceilEdge)); localStorage.setItem("crowdEdge2", String(crowdEdge)); } catch {}
   if (settings && tx) {                                   // live preview: a still horizontal line at that edge
     if (!aimActive) { aimActive = true; aimReturn = active; stopChase(); }
     lastScene = { ...baseScene(), graph: 0, group: G.line, color: C.white, size: 255, hmove: 0, rot: 0, vmove: posByte(v) };
@@ -1441,6 +1441,7 @@ let chaseTimer = null;
 function stopChase() {
   inProgram = false; pending = null; lastScene = null; look = null; move = null;
   if (partyTimer) clearInterval(partyTimer); if (animTimer) clearInterval(animTimer); partyTimer = animTimer = null;
+  if (burstTimer) { clearTimeout(burstTimer); burstTimer = null; }
   if (chaseTimer) clearInterval(chaseTimer);
   chaseTimer = null; chase = null;
   try { wakeLock && wakeLock.release(); } catch {} wakeLock = null;
