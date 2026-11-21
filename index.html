@@ -123,7 +123,7 @@
   <header class="top">
     <div class="brand">
       <h1>Laser Console</h1>
-      <span class="sub">2 × TD5322A · Bluetooth · build 33 (ceiling clearance)</span>
+      <span class="sub">2 × TD5322A · Bluetooth · build 34 (laser mics only)</span>
     </div>
     <span class="pill" id="pill">Offline</span>
   </header>
@@ -166,7 +166,8 @@
 
   <div class="card" id="soundCard">
     <h2><span class="n">02</span>Sound<span class="hint"><span id="beatDot" class="beatdot"></span> <span id="bpmRead">off</span></span></h2>
-    <button id="listenBtn">Listen to the music (this device's mic): OFF</button>
+    <p class="note" style="margin:0 0 12px"><b>Sound uses the lasers' own microphones</b> (Rave, Rave + Anim, Lines): nothing to switch on, and this page never opens your device's microphone by itself.</p>
+    <button id="listenBtn">Optional: also listen with this device's mic: OFF</button>
     <div class="meters">
       <div class="meter"><span>Bass</span><b><i id="mLow"></i></b></div>
       <div class="meter"><span>Mid</span><b><i id="mMid"></i></b></div>
@@ -176,7 +177,7 @@
     <input type="range" id="flashThr" min="50" max="100" step="1" value="85" aria-label="Flash threshold">
     <label><span>Change look every</span><span id="lookVal">16 s</span></label>
     <input type="range" id="lookSecs" min="4" max="60" step="1" value="16" aria-label="Change look every">
-    <p class="note">Listening drives Club and Party: bass hits pulse the size, mids set the motion speed, highs flash, beats step colours and patterns. Rave and Rave + Anim also run on the lasers' own mic; listening adds drop detection.</p>
+    <p class="note">The lasers' mics can only drive their built-in modes (Rave, Rave + Anim, Lines). Club, Party and the burst modes are page-driven, so they run on a clock; they react to the music only if you turn on the optional device mic above.</p>
   </div>
 
   <div class="card" id="deck">
@@ -1311,6 +1312,7 @@ const BPM = 128;
 const audio = { locked: false, on: false, low: 0, mid: 0, high: 0, beats: 0, flashThr: .85, lookSecs: 16, pulseAt: 0, flashUntil: 0, silent: false,
                 shortLow: 0, longLow: 0, drop: false, lastDropAt: 0 };
 let mic = null, lastBeatAt = 0, beatGap = 60000 / BPM, micLevel = 100;
+let micArmed = false;                       // set true ONLY by a tap on the Listen button
 // ---- Tempo lock: estimate the beat period from recent onsets; accept it when >= 4 onsets fit its grid.
 const LATENCY = 70;                           // ms sent early (BLE + laser response)
 let onsets = [], lastOnset = 0, nextBeat = 0;
@@ -1334,6 +1336,7 @@ function onOnset(t) {
   if (Math.abs(e) < beatGap * .15) { nextBeat += e * .35; beatGap = beatGap * .8 + p * .2; }
 }
 async function startListening() {
+  if (!micArmed) throw new Error("device microphone not enabled");          // hard guard: only the Listen button arms this
   const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
   const ctx = new (window.AudioContext || window.webkitAudioContext)(); try { await ctx.resume(); } catch {}
   const an = ctx.createAnalyser(); an.fftSize = 2048; an.smoothingTimeConstant = 0;
@@ -1413,9 +1416,9 @@ function onSoundBack() {
 $("listenBtn").onclick = async () => {
   try {
     if (audio.on) stopListening();
-    else { await startListening(); audio.on = true; }
+    else { micArmed = true; try { await startListening(); audio.on = true; } finally { micArmed = false; } }
   } catch (e) { status("Couldn't use the microphone here (" + e.message + "). On iPhone, allow the mic for Bluefy, or use Chrome on a computer.", true); }
-  $("listenBtn").textContent = "Listen to the music (this device's mic): " + (audio.on ? "ON" : "OFF");
+  $("listenBtn").textContent = "Optional: also listen with this device's mic: " + (audio.on ? "ON" : "OFF");
   $("listenBtn").classList.toggle("primary", audio.on);
 };
 $("flashThr").oninput = e => { audio.flashThr = +e.target.value / 100; $("flashVal").textContent = e.target.value + "%"; };
@@ -1470,10 +1473,8 @@ async function startShow(name) {
     settings[5] = Math.round(s.speed * Math.min(1, live.speed)); settings[9] = live.sensByte ?? (s.sound ? 230 : settings[9]);
     if (!s.chase) { try { await writeSure(settingsFrame(settings)); } catch (e) { return status(e.message, true); } }
     if (s.chase) { startChase(s.chase); micFresh = true; }
-    if ((name === "rave" || name === "mix") && !audio.on) {                  // Rave follows the music: listen automatically
-      startListening().then(() => { audio.on = true; $("listenBtn").textContent = "Listen to the music (this device's mic): ON"; $("listenBtn").classList.add("primary"); })
-        .catch(() => status("Rave is using the lasers' own mic only (this device's mic isn't allowed)."));
-    }
+    // Sound = the LASERS' OWN microphones (built-in sound mode). This page never opens this device's microphone
+    // unless you tap the separate "Listen" button yourself.
   }
   status(s.label + " is playing." + (s.chase || name === "party" || name === "anim" ? " Keep this page open." : ""));
   render();
